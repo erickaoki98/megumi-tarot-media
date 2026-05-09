@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  min-height: 100vh;
+  background: #f5ecdf;
+  color: #191812;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
