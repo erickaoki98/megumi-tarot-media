@@ -72,6 +72,22 @@ export type SocialConnection = {
   lastSync: string | null;
 };
 
+export type SecureConnectionFieldStatus = {
+  name: string;
+  label: string;
+  envName: string;
+  required: boolean;
+  configured: boolean;
+  maskedValue: string | null;
+  help: string;
+};
+
+export type SecureConnectionSummary = {
+  network: NetworkKey;
+  ready: boolean;
+  fields: SecureConnectionFieldStatus[];
+};
+
 export type AuditEntry = {
   id: string;
   type: string;

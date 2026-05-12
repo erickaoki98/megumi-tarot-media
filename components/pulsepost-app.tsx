@@ -12,6 +12,7 @@ import {
   PersistedState,
   RepostRule,
   ScheduleItem,
+  SecureConnectionSummary,
   SocialConnection,
   ViewKey,
 } from "@/types/app";
@@ -191,14 +192,17 @@ function randomId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function PulsePostApp() {
+export function PulsePostApp({
+  secureConnectionSummaries,
+}: {
+  secureConnectionSummaries: SecureConnectionSummary[];
+}) {
   const [data, setData] = useState<PersistedState>(seedState);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewKey>("scheduler");
   const [filters, setFilters] = useState<FiltersState>(defaultFilters);
   const [flash, setFlash] = useState<FlashState>(null);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [editingConnectionId, setEditingConnectionId] = useState<string | null>(null);
 
   useEffect(() => {
     const nextState = loadState();
@@ -416,33 +420,6 @@ export function PulsePostApp() {
     }
 
     persist({ ...data, users: data.users.filter((item) => item.id !== userId) }, "Usuario removido.");
-  }
-
-  function handleUpdateConnection(connectionId: string, formData: FormData) {
-    const nextConnections = data.connections.map((connection) =>
-      connection.id === connectionId
-        ? {
-            ...connection,
-            accountName: String(formData.get("accountName") ?? "").trim(),
-            clientId: String(formData.get("clientId") ?? "").trim(),
-            clientSecret: String(formData.get("clientSecret") ?? "").trim(),
-            accessToken: String(formData.get("accessToken") ?? "").trim(),
-            refreshToken: String(formData.get("refreshToken") ?? "").trim(),
-            accountId: String(formData.get("accountId") ?? "").trim(),
-            pageId: String(formData.get("pageId") ?? "").trim(),
-            redirectUri: String(formData.get("redirectUri") ?? "").trim(),
-            scopes: String(formData.get("scopes") ?? "").trim(),
-            webhookUrl: String(formData.get("webhookUrl") ?? "").trim(),
-            tokenExpiresAt: String(formData.get("tokenExpiresAt") ?? "").trim(),
-            status: String(formData.get("status") ?? connection.status) as SocialConnection["status"],
-            lastSync:
-              String(formData.get("status") ?? connection.status) === "connected" ? new Date().toISOString() : connection.lastSync,
-          }
-        : connection,
-    );
-
-    persist({ ...data, connections: nextConnections }, "Configuracao de conexao salva.");
-    setEditingConnectionId(null);
   }
 
   function removeMedia(id: string) {
@@ -934,81 +911,59 @@ export function PulsePostApp() {
 
               {activeView === "config" ? (
                 <section className="grid gap-5">
-                  <Card title="Conexoes por API" description="Revisei os campos contra a documentacao oficial e troquei a configuracao generica por orientacoes especificas de cada rede.">
+                  <Card title="Conexoes por API" description="Agora os segredos ficam apenas no servidor. A interface mostra status mascarado, nomes das variaveis de ambiente e o passo a passo de configuracao.">
                     <div className="mb-5 rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
-                      O estado atual do produto ainda nao executa chamadas reais de API para publicar ou agendar. Hoje esta tela prepara os dados corretos para a integracao. O problema principal era pedir o mesmo conjunto de campos para todas as redes, o que nao representa bem os requisitos oficiais.
+                      Segredos de API nao devem mais ser preenchidos nem persistidos no navegador. Configure as variaveis em ambiente seguro no servidor ou na Vercel e use este painel apenas para conferir se cada rede esta pronta.
                     </div>
                     <div className="grid gap-3">
-                      {data.connections.map((connection) => (
-                        <article key={connection.id} className="rounded-[1.25rem] border border-violet/10 p-4">
-                          {editingConnectionId === connection.id ? (
-                            <form
-                              className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]"
-                              action={(formData) => {
-                                handleUpdateConnection(connection.id, formData);
-                              }}
-                            >
-                              <div className="grid gap-4">
-                                <div className="flex items-center justify-between gap-3">
-                                  <h3 className="font-medium">{networkLabels[connection.network]}</h3>
-                                  <SelectField
-                                    label="Status"
-                                    name="status"
-                                    defaultValue={connection.status}
-                                    options={[
-                                      { label: "Conectado", value: "connected" },
-                                      { label: "Pendente", value: "pending" },
-                                      { label: "Desconectado", value: "disconnected" },
-                                    ]}
-                                  />
+                      {secureConnectionSummaries.map((connectionSummary) => (
+                        <article key={connectionSummary.network} className="rounded-[1.25rem] border border-violet/10 p-4">
+                          <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+                            <div>
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <h3 className="font-medium">{networkLabels[connectionSummary.network]}</h3>
+                                  <p className="mt-1 text-sm text-ink/55">
+                                    {connectionSummary.ready
+                                      ? "Campos obrigatorios encontrados no servidor."
+                                      : "Ainda faltam variaveis obrigatorias no ambiente seguro."}
+                                  </p>
                                 </div>
-                                <Field label="Nome da conta" name="accountName" defaultValue={connection.accountName} placeholder="@sua_conta" required={false} />
-                                {connectionGuides[connection.network].fields.map((field) => (
-                                  <Field
-                                    key={`${connection.id}-${field.name}`}
-                                    label={field.label}
-                                    name={field.name}
-                                    defaultValue={connection[field.name]}
-                                    placeholder={field.placeholder}
-                                    required={field.required ?? false}
-                                  />
-                                ))}
-                                <div className="flex flex-wrap gap-3">
-                                  <PrimaryButton label="Salvar conexao" />
-                                  <SecondaryButton label="Cancelar" onClick={() => setEditingConnectionId(null)} type="button" />
-                                </div>
+                                <StatusPill status={connectionSummary.ready ? "connected" : "pending"} />
                               </div>
 
-                              <ConnectionGuide network={connection.network} />
-                            </form>
-                          ) : (
-                            <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-                              <div>
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                  <div>
-                                    <h3 className="font-medium">{networkLabels[connection.network]}</h3>
-                                    <p className="mt-1 text-sm text-ink/55">
-                                      {connection.accountName || "Conta ainda nao configurada"}
+                              <div className="mt-4 grid gap-3">
+                                {connectionSummary.fields.map((field) => (
+                                  <div key={`${connectionSummary.network}-${field.envName}`} className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                      <div>
+                                        <div className="text-sm font-medium text-ink">{field.label}</div>
+                                        <div className="mt-1 font-mono text-xs text-violet">{field.envName}</div>
+                                      </div>
+                                      <span
+                                        className={classNames(
+                                          "rounded-full px-3 py-1 text-xs",
+                                          field.configured ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600",
+                                        )}
+                                      >
+                                        {field.configured ? "configurado" : field.required ? "obrigatorio pendente" : "opcional"}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 text-sm text-ink/60">{field.help}</p>
+                                    <p className="mt-2 text-xs text-ink/45">
+                                      Valor no servidor: {field.maskedValue ?? "nao configurado"}
                                     </p>
                                   </div>
-                                  <StatusPill status={connection.status} />
-                                </div>
-                                <div className="mt-3 grid gap-1 text-sm text-ink/60">
-                                  <span>{connectionGuides[connection.network].fields[0]?.label}: {connection.clientId ? "configurado" : "pendente"}</span>
-                                  <span>{connectionGuides[connection.network].fields.find((field) => field.name === "accessToken")?.label ?? "Access token"}: {connection.accessToken ? "configurado" : "pendente"}</span>
-                                  {connection.accountId ? <span>ID principal: {connection.accountId}</span> : null}
-                                  {connection.pageId ? <span>Pagina vinculada: {connection.pageId}</span> : null}
-                                  <span>
-                                    Ultima sincronizacao: {connection.lastSync ? formatDate(connection.lastSync) : "ainda nao executada"}
-                                  </span>
-                                </div>
-                                <div className="mt-4">
-                                  <SecondaryButton label="Editar conexao" onClick={() => setEditingConnectionId(connection.id)} />
-                                </div>
+                                ))}
                               </div>
-                              <ConnectionGuide network={connection.network} />
+
+                              <div className="mt-4 rounded-[1.15rem] border border-violet/10 bg-white px-4 py-3 text-sm text-ink/60">
+                                Configure essas variaveis em `Vercel → Project Settings → Environment Variables` e depois rode um novo deploy.
+                              </div>
                             </div>
-                          )}
+
+                            <ConnectionGuide network={connectionSummary.network} />
+                          </div>
                         </article>
                       ))}
                     </div>
