@@ -54,6 +54,19 @@ export type AppUser = {
   createdAt: string;
 };
 
+export type SocialConnection = {
+  id: string;
+  network: NetworkKey;
+  status: "connected" | "pending" | "disconnected";
+  accountName: string;
+  apiKey: string;
+  apiSecret: string;
+  accessToken: string;
+  refreshToken: string;
+  webhookUrl: string;
+  lastSync: string | null;
+};
+
 export type AuditEntry = {
   id: string;
   type: string;
@@ -66,6 +79,7 @@ export type PersistedState = {
   mediaLibrary: MediaItem[];
   schedules: ScheduleItem[];
   repostRules: RepostRule[];
+  connections: SocialConnection[];
   audit: AuditEntry[];
 };
 
@@ -74,4 +88,4 @@ export type FlashState = {
   kind: "success" | "error";
 } | null;
 
-export type ViewKey = "dashboard" | "library" | "scheduler" | "reposts" | "users";
+export type ViewKey = "library" | "scheduler" | "reposts" | "users" | "config";

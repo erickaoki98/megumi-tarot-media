@@ -8,23 +8,24 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#191812",
-        sand: "#efe3d1",
-        cream: "#f8f3eb",
-        ember: "#f36a3d",
-        lagoon: "#0f766e",
-        panel: "rgba(255, 250, 242, 0.8)",
+        ink: "#161126",
+        haze: "#f6f3ff",
+        mist: "#ece6ff",
+        violet: "#7c3aed",
+        plum: "#5b21b6",
+        lilac: "#c4b5fd",
+        panel: "rgba(255, 255, 255, 0.82)",
       },
       fontFamily: {
         display: ["Avenir Next", "Trebuchet MS", "sans-serif"],
         body: ["Avenir", "Avenir Next", "Segoe UI", "sans-serif"],
       },
       boxShadow: {
-        panel: "0 20px 60px rgba(104, 75, 24, 0.12)",
+        panel: "0 20px 60px rgba(76, 29, 149, 0.12)",
       },
       backgroundImage: {
         "hero-wash":
-          "radial-gradient(circle at top left, rgba(243, 106, 61, 0.22), transparent 28%), radial-gradient(circle at 85% 20%, rgba(15, 118, 110, 0.18), transparent 25%), linear-gradient(135deg, #f8f3e9 0%, #efe5d1 50%, #f5ecdf 100%)",
+          "radial-gradient(circle at top left, rgba(124, 58, 237, 0.18), transparent 24%), radial-gradient(circle at 85% 20%, rgba(167, 139, 250, 0.18), transparent 28%), linear-gradient(180deg, #fcfbff 0%, #f3efff 48%, #f7f4ff 100%)",
       },
     },
   },

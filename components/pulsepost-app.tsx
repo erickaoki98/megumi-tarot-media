@@ -1,9 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { seedState, STORAGE_KEY, networkLabels } from "@/lib/constants";
-import { calculateScoreSummary, classNames, formatDate, formatNetworkList, getMediaHealth } from "@/lib/utils";
-import { FlashState, MediaItem, MediaStatus, NetworkKey, PersistedState, RepostRule, ScheduleItem, ViewKey } from "@/types/app";
+import { networkLabels, seedState, STORAGE_KEY } from "@/lib/constants";
+import { classNames, formatDate, formatNetworkList, getMediaHealth } from "@/lib/utils";
+import {
+  AppUser,
+  FlashState,
+  MediaItem,
+  MediaStatus,
+  NetworkKey,
+  PersistedState,
+  RepostRule,
+  ScheduleItem,
+  SocialConnection,
+  ViewKey,
+} from "@/types/app";
 
 type FiltersState = {
   mediaStatus: "all" | MediaStatus;
@@ -52,13 +63,14 @@ function randomId(prefix: string) {
 export function PulsePostApp() {
   const [data, setData] = useState<PersistedState>(seedState);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<ViewKey>("dashboard");
+  const [activeView, setActiveView] = useState<ViewKey>("scheduler");
   const [filters, setFilters] = useState<FiltersState>(defaultFilters);
   const [flash, setFlash] = useState<FlashState>(null);
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editingConnectionId, setEditingConnectionId] = useState<string | null>(null);
 
   useEffect(() => {
-    const nextState = loadState();
-    setData(nextState);
+    setData(loadState());
   }, []);
 
   useEffect(() => {
@@ -66,9 +78,14 @@ export function PulsePostApp() {
       return;
     }
 
-    const timer = window.setTimeout(() => setFlash(null), 3000);
+    const timer = window.setTimeout(() => setFlash(null), 3200);
     return () => window.clearTimeout(timer);
   }, [flash]);
+
+  useEffect(() => {
+    const pageTitle = pageTitleMap[activeView];
+    document.title = `Megumi Tarot - Media Center${pageTitle ? ` - ${pageTitle}` : ""}`;
+  }, [activeView]);
 
   const currentUser = useMemo(
     () => data.users.find((user) => user.id === sessionUserId) ?? null,
@@ -82,37 +99,11 @@ export function PulsePostApp() {
     [data.mediaLibrary],
   );
 
-  const scoreSummary = useMemo(() => calculateScoreSummary(data.mediaLibrary), [data.mediaLibrary]);
+  const filteredMedia = useMemo(
+    () => data.mediaLibrary.filter((item) => (filters.mediaStatus === "all" ? true : item.status === filters.mediaStatus)),
+    [data.mediaLibrary, filters.mediaStatus],
+  );
 
-  const metrics = [
-    {
-      label: "Postagens agendadas",
-      value: data.schedules.filter((item) => item.status === "scheduled").length,
-      hint: "Fila pronta para publicar",
-    },
-    {
-      label: "Midias ativas",
-      value: data.mediaLibrary.filter((item) => item.status === "active").length,
-      hint: "Disponiveis para novos agendamentos",
-    },
-    {
-      label: "Score medio",
-      value: `${scoreSummary}/100`,
-      hint: "Media calculada entre redes monitoradas",
-    },
-    {
-      label: "Itens em revisao",
-      value: data.mediaLibrary.filter((item) => item.status !== "active").length + suggestedRemovals.length,
-      hint: "Pontos de atencao do algoritmo",
-    },
-  ];
-
-  const networkStats = (Object.keys(networkLabels) as NetworkKey[]).map((key) => ({
-    key,
-    label: networkLabels[key],
-    posts: data.schedules.filter((schedule) => schedule.networks.includes(key)).length,
-    views: data.mediaLibrary.reduce((total, item) => total + item.stats[key].views, 0),
-  }));
 
   function persist(nextState: PersistedState, message?: string, kind: "success" | "error" = "success") {
     setData(nextState);
@@ -120,10 +111,6 @@ export function PulsePostApp() {
     if (message) {
       setFlash({ message, kind });
     }
-  }
-
-  function resetDemo() {
-    persist(seedState, "Dados de exemplo restaurados.");
   }
 
   function handleLogin(formData: FormData) {
@@ -137,8 +124,8 @@ export function PulsePostApp() {
     }
 
     setSessionUserId(user.id);
-    setActiveView("dashboard");
-    setFlash({ message: `Bem-vinda, ${user.name}.`, kind: "success" });
+    setActiveView("scheduler");
+    setFlash({ message: `Sessao iniciada para ${user.name}.`, kind: "success" });
   }
 
   function handleCreateMedia(formData: FormData) {
@@ -182,7 +169,7 @@ export function PulsePostApp() {
       repostRuleId: String(formData.get("repostRuleId") ?? "") || null,
     };
 
-    persist({ ...data, schedules: [nextSchedule, ...data.schedules] }, "Agendamento criado com sucesso.");
+    persist({ ...data, schedules: [nextSchedule, ...data.schedules] }, "Agendamento criado.");
   }
 
   function handleCreateRule(formData: FormData) {
@@ -204,40 +191,104 @@ export function PulsePostApp() {
       active: true,
     };
 
-    persist({ ...data, repostRules: [nextRule, ...data.repostRules] }, "Regra de repostagem salva.");
+    persist({ ...data, repostRules: [nextRule, ...data.repostRules] }, "Regra salva.");
   }
 
   function handleCreateUser(formData: FormData) {
     if (!isAdmin) {
-      setFlash({ message: "Somente administradores podem criar novos usuarios.", kind: "error" });
+      setFlash({ message: "Somente administradores podem criar usuarios.", kind: "error" });
       return;
     }
 
     const email = String(formData.get("email") ?? "").trim().toLowerCase();
     const exists = data.users.some((user) => user.email.toLowerCase() === email);
-
     if (exists) {
       setFlash({ message: "Ja existe um usuario com esse e-mail.", kind: "error" });
       return;
     }
 
-    persist(
-      {
-        ...data,
-        users: [
-          {
-            id: randomId("user"),
+    const nextUser: AppUser = {
+      id: randomId("user"),
+      name: String(formData.get("name") ?? "").trim(),
+      email,
+      password: String(formData.get("password") ?? ""),
+      role: String(formData.get("role") ?? "editor") as AppUser["role"],
+      createdAt: new Date().toISOString(),
+    };
+
+    persist({ ...data, users: [nextUser, ...data.users] }, "Usuario criado.");
+  }
+
+  function handleUpdateUser(userId: string, formData: FormData) {
+    const email = String(formData.get("email") ?? "").trim().toLowerCase();
+    const duplicate = data.users.some((user) => user.id !== userId && user.email.toLowerCase() === email);
+
+    if (duplicate) {
+      setFlash({ message: "Outro usuario ja usa esse e-mail.", kind: "error" });
+      return;
+    }
+
+    const nextUsers = data.users.map((user) =>
+      user.id === userId
+        ? {
+            ...user,
             name: String(formData.get("name") ?? "").trim(),
-            role: String(formData.get("role") ?? "editor") as "admin" | "editor",
             email,
             password: String(formData.get("password") ?? ""),
-            createdAt: new Date().toISOString(),
-          },
-          ...data.users,
-        ],
-      },
-      "Novo usuario criado.",
+            role: String(formData.get("role") ?? user.role) as AppUser["role"],
+          }
+        : user,
     );
+
+    persist({ ...data, users: nextUsers }, "Usuario atualizado.");
+    setEditingUserId(null);
+  }
+
+  function deleteUser(userId: string) {
+    if (!isAdmin) {
+      setFlash({ message: "Somente administradores podem remover usuarios.", kind: "error" });
+      return;
+    }
+
+    const user = data.users.find((item) => item.id === userId);
+    if (!user) {
+      return;
+    }
+
+    const adminCount = data.users.filter((item) => item.role === "admin").length;
+    if (user.role === "admin" && adminCount === 1) {
+      setFlash({ message: "O ultimo admin nao pode ser removido.", kind: "error" });
+      return;
+    }
+
+    if (user.id === sessionUserId) {
+      setFlash({ message: "Nao e possivel remover o usuario em uso.", kind: "error" });
+      return;
+    }
+
+    persist({ ...data, users: data.users.filter((item) => item.id !== userId) }, "Usuario removido.");
+  }
+
+  function handleUpdateConnection(connectionId: string, formData: FormData) {
+    const nextConnections = data.connections.map((connection) =>
+      connection.id === connectionId
+        ? {
+            ...connection,
+            accountName: String(formData.get("accountName") ?? "").trim(),
+            apiKey: String(formData.get("apiKey") ?? "").trim(),
+            apiSecret: String(formData.get("apiSecret") ?? "").trim(),
+            accessToken: String(formData.get("accessToken") ?? "").trim(),
+            refreshToken: String(formData.get("refreshToken") ?? "").trim(),
+            webhookUrl: String(formData.get("webhookUrl") ?? "").trim(),
+            status: String(formData.get("status") ?? connection.status) as SocialConnection["status"],
+            lastSync:
+              String(formData.get("status") ?? connection.status) === "connected" ? new Date().toISOString() : connection.lastSync,
+          }
+        : connection,
+    );
+
+    persist({ ...data, connections: nextConnections }, "Configuracao de conexao salva.");
+    setEditingConnectionId(null);
   }
 
   function removeMedia(id: string) {
@@ -251,11 +302,9 @@ export function PulsePostApp() {
       {
         ...data,
         mediaLibrary: data.mediaLibrary.filter((item) => item.id !== id),
-        schedules: data.schedules.map((schedule) =>
-          schedule.mediaId === id ? { ...schedule, mediaId: null } : schedule,
-        ),
+        schedules: data.schedules.map((schedule) => (schedule.mediaId === id ? { ...schedule, mediaId: null } : schedule)),
       },
-      `Midia "${media.title}" removida da biblioteca.`,
+      `Midia "${media.title}" removida.`,
     );
   }
 
@@ -280,7 +329,7 @@ export function PulsePostApp() {
       }),
     };
 
-    persist(nextState, "Estatisticas simuladas atualizadas.");
+    persist(nextState, "Estatisticas atualizadas.");
   }
 
   function getLinkedMediaTitle(mediaId: string | null) {
@@ -290,763 +339,872 @@ export function PulsePostApp() {
   if (!currentUser) {
     return (
       <main className="min-h-screen px-4 py-6 md:px-6">
-        <div className="mx-auto grid min-h-[calc(100vh-3rem)] max-w-7xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-          <section className="relative overflow-hidden rounded-[2.25rem] border border-white/50 bg-panel p-8 shadow-panel backdrop-blur-xl md:p-10">
-            <span className="inline-flex rounded-full bg-ink/5 px-4 py-2 text-xs uppercase tracking-[0.22em] text-ink/60">
-              Operacao social centralizada
-            </span>
-            <h1 className="mt-6 max-w-[10ch] font-display text-5xl leading-none md:text-7xl">
-              Agende, recicle e monitore conteudo em varias redes.
+        <div className="mx-auto grid min-h-[calc(100vh-3rem)] max-w-6xl gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <section className="rounded-[2rem] border border-violet/10 bg-white/70 p-8 shadow-panel backdrop-blur md:p-12">
+            <div className="inline-flex items-center gap-4">
+              <LogoMark />
+              <div>
+                <div className="text-sm uppercase tracking-[0.26em] text-violet/80">Megumi Tarot</div>
+                <div className="mt-1 font-display text-2xl tracking-[-0.04em]">Media Center</div>
+              </div>
+            </div>
+            <h1 className="mt-10 max-w-[10ch] font-display text-5xl leading-[0.92] tracking-[-0.04em] md:text-7xl">
+              Conteudo bem guiado, visual e pronto para publicar.
             </h1>
-            <p className="mt-5 max-w-2xl text-base leading-7 text-ink/65">
-              O PulsePost Admin organiza biblioteca de fotos e videos, programa publicacoes simultaneas para
-              Instagram, Facebook, YouTube Shorts e TikTok, e sinaliza criativos com baixa performance para
-              retirada da biblioteca.
+            <p className="mt-6 max-w-xl text-base leading-7 text-ink/65">
+              Um painel mais calmo e intuitivo para organizar midias, publicar em varias redes e configurar conexoes
+              de API sem ruido visual.
             </p>
-            <div className="mt-8 grid gap-4 md:grid-cols-2">
-              {[
-                { label: "Midias prontas", value: data.mediaLibrary.length },
-                { label: "Agendamentos ativos", value: data.schedules.length },
-                { label: "Regras de repost", value: data.repostRules.length },
-                { label: "Midias em risco", value: suggestedRemovals.length },
-              ].map((item) => (
-                <article key={item.label} className="rounded-3xl border border-ink/10 bg-white/60 p-5">
-                  <strong className="block text-4xl font-semibold">{item.value}</strong>
-                  <span className="mt-2 block text-sm text-ink/60">{item.label}</span>
-                </article>
-              ))}
+
+            <div className="mt-10 grid gap-4">
+              <IllustrationRow
+                icon={<HeartPlayIcon className="size-5 text-violet" />}
+                title="Publicacao multicanal"
+                description="Organize uma mesma campanha para Instagram, Facebook, YouTube Shorts e TikTok."
+              />
+              <IllustrationRow
+                icon={<LibraryIcon className="size-5 text-violet" />}
+                title="Biblioteca central"
+                description="Fotos e videos ficam reunidos em um fluxo mais limpo para selecionar, revisar e publicar."
+              />
+              <IllustrationRow
+                icon={<ConnectionIcon className="size-5 text-violet" />}
+                title="Conexoes de API"
+                description="A area de configuracao concentra tokens, chaves, webhooks e status por rede."
+              />
             </div>
           </section>
 
-          <section className="flex flex-col justify-center rounded-[2.25rem] border border-white/50 bg-panel p-8 shadow-panel backdrop-blur-xl md:p-10">
-            <span className="inline-flex w-fit rounded-full bg-ink/5 px-4 py-2 text-xs uppercase tracking-[0.22em] text-ink/60">
-              Entrar no painel
-            </span>
-            <h2 className="mt-4 font-display text-4xl">PulsePost Admin</h2>
-            <p className="mt-3 text-ink/65">Apenas administradores podem criar novos usuarios.</p>
+          <section className="rounded-[2rem] border border-violet/10 bg-white/88 p-8 shadow-panel backdrop-blur md:p-10">
+            <div className="text-sm uppercase tracking-[0.26em] text-violet/80">Entrar</div>
+            <h2 className="mt-4 font-display text-4xl tracking-[-0.04em]">Megumi Tarot - Media Center</h2>
+            <p className="mt-3 max-w-sm text-sm leading-6 text-ink/60">
+              Entre com as credenciais da sua operacao para abrir o painel administrativo.
+            </p>
 
-            {flash ? (
-              <div
-                className={classNames(
-                  "mt-6 rounded-2xl px-4 py-3 text-sm",
-                  flash.kind === "error" ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-800",
-                )}
-              >
-                {flash.message}
-              </div>
-            ) : null}
+            {flash ? <FlashBanner flash={flash} className="mt-6" /> : null}
 
             <form
-              className="mt-6 grid gap-4"
+              className="mt-8 grid gap-4"
               action={(formData) => {
                 handleLogin(formData);
               }}
             >
-              <label className="grid gap-2 font-medium">
-                <span>E-mail</span>
-                <input
-                  className="rounded-2xl border border-ink/10 bg-white/80 px-4 py-3 outline-none ring-0 transition focus:border-ember"
-                  name="email"
-                  type="email"
-                  placeholder="erickaoki@icloud.com"
-                  required
-                />
-              </label>
-              <label className="grid gap-2 font-medium">
-                <span>Senha</span>
-                <input
-                  className="rounded-2xl border border-ink/10 bg-white/80 px-4 py-3 outline-none ring-0 transition focus:border-ember"
-                  name="password"
-                  type="password"
-                  placeholder="larissa3105"
-                  required
-                />
-              </label>
-              <div className="mt-2 flex flex-wrap gap-3">
-                <button className="rounded-full bg-ember px-5 py-3 font-medium text-white shadow-lg shadow-ember/30">
-                  Entrar
-                </button>
-                <button
-                  type="button"
-                  className="rounded-full bg-ink/5 px-5 py-3 font-medium text-ink"
-                  onClick={resetDemo}
-                >
-                  Restaurar dados de exemplo
-                </button>
-              </div>
+              <Field label="E-mail" name="email" type="email" placeholder="seuemail@empresa.com" />
+              <Field label="Senha" name="password" type="password" placeholder="Digite sua senha" />
+              <button className="mt-2 rounded-full bg-violet px-5 py-3 font-medium text-white shadow-lg shadow-violet/20">
+                Acessar painel
+              </button>
             </form>
-
-            <div className="mt-6 rounded-3xl bg-gradient-to-br from-lagoon/10 to-ember/10 p-5">
-              <strong className="block text-lg">Usuario padrao</strong>
-              <p className="mt-2 text-sm leading-6 text-ink/70">
-                Login: erickaoki@icloud.com
-                <br />
-                Senha: larissa3105
-              </p>
-            </div>
           </section>
         </div>
       </main>
     );
   }
 
-  const filteredMedia = data.mediaLibrary.filter((item) =>
-    filters.mediaStatus === "all" ? true : item.status === filters.mediaStatus,
-  );
-
   return (
-    <main className="min-h-screen px-4 py-6 md:px-6">
-      <div className="mx-auto grid max-w-7xl gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="flex h-full flex-col rounded-[2rem] bg-[#16221d] p-6 text-white xl:sticky xl:top-6 xl:h-[calc(100vh-3rem)]">
-          <div>
-            <p className="font-display text-3xl">PulsePost</p>
-            <p className="mt-2 text-sm text-white/70">Painel de operacao e agendamento social</p>
-          </div>
-
-          <nav className="mt-8 grid gap-2">
-            {[
-              { key: "dashboard", label: "Dashboard" },
-              { key: "library", label: "Biblioteca" },
-              { key: "scheduler", label: "Agendamentos" },
-              { key: "reposts", label: "Repostagem" },
-              ...(isAdmin ? [{ key: "users", label: "Usuarios" }] : []),
-            ].map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => setActiveView(item.key as ViewKey)}
-                className={classNames(
-                  "rounded-2xl border border-white/10 px-4 py-3 text-left transition",
-                  activeView === item.key ? "bg-white/15" : "bg-transparent",
-                )}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-
-          <div className="mt-auto border-t border-white/10 pt-5">
-            <p className="font-medium">{currentUser.name}</p>
-            <p className="mt-1 text-sm text-white/70">
-              {currentUser.email} · {currentUser.role}
-            </p>
-            <button
-              type="button"
-              className="mt-4 rounded-full bg-white/10 px-4 py-2 text-sm"
-              onClick={() => {
-                setSessionUserId(null);
-                setActiveView("dashboard");
-                setFlash({ message: "Sessao encerrada.", kind: "success" });
-              }}
-            >
-              Sair
-            </button>
-          </div>
-        </aside>
-
-        <section className="grid content-start gap-5">
-          <header className="flex flex-col gap-4 rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel backdrop-blur-xl lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <h1 className="font-display text-4xl md:text-5xl">Controle total do calendario social.</h1>
-              <p className="mt-3 max-w-3xl text-sm leading-6 text-ink/65 md:text-base">
-                Centralize biblioteca de fotos e videos, distribua posts para varias redes ao mesmo tempo e use o
-                score de desempenho para decidir o que repostar ou remover.
-              </p>
+    <main className="min-h-screen px-4 py-4 md:px-6 md:py-6">
+      <div className="mx-auto max-w-7xl">
+        <div className="rounded-[2rem] border border-violet/10 bg-white/80 shadow-panel backdrop-blur">
+          <header className="flex flex-col gap-5 border-b border-violet/10 px-5 py-5 md:px-8 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-4">
+              <LogoMark compact />
+              <div>
+                <div className="text-sm uppercase tracking-[0.26em] text-violet/80">Megumi Tarot</div>
+                <h1 className="mt-1 font-display text-3xl tracking-[-0.04em] md:text-4xl">Media Center</h1>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-3">
+
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="rounded-full border border-violet/10 bg-violet/5 px-4 py-2 text-sm text-ink/70">
+                {currentUser.name} · {currentUser.role}
+              </div>
               <button
                 type="button"
-                className="rounded-full bg-ember px-5 py-3 font-medium text-white shadow-lg shadow-ember/30"
-                onClick={() => setActiveView("scheduler")}
+                className="rounded-full border border-violet/15 px-4 py-2 text-sm font-medium text-violet"
+                onClick={() => setActiveView("config")}
               >
-                Novo agendamento
+                Config
               </button>
               <button
                 type="button"
-                className="rounded-full bg-ink/5 px-5 py-3 font-medium text-ink"
-                onClick={() => setActiveView("library")}
+                className="rounded-full bg-violet px-4 py-2 text-sm font-medium text-white"
+                onClick={() => {
+                  setSessionUserId(null);
+                  setActiveView("scheduler");
+                  setFlash({ message: "Sessao encerrada.", kind: "success" });
+                }}
               >
-                Adicionar midia
+                Sair
               </button>
             </div>
           </header>
 
-          {flash ? (
-            <div
-              className={classNames(
-                "rounded-2xl px-4 py-3 text-sm",
-                flash.kind === "error" ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-800",
-              )}
-            >
-              {flash.message}
-            </div>
-          ) : null}
+          <div className="border-b border-violet/10 px-5 py-4 md:px-8">
+            <nav className="flex flex-wrap gap-2">
+                {[
+                  { key: "library", label: "Biblioteca" },
+                  { key: "scheduler", label: "Agendamentos" },
+                  { key: "reposts", label: "Repostagem" },
+                  { key: "users", label: "Usuarios" },
+                  { key: "config", label: "Config" },
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setActiveView(item.key as ViewKey)}
+                    className={classNames(
+                      "rounded-full px-4 py-2.5 text-sm transition",
+                      activeView === item.key ? "bg-violet text-white shadow-lg shadow-violet/15" : "bg-violet/5 text-ink/65 hover:bg-violet/10",
+                    )}
+                  >
+                    <span className="flex items-center gap-3">
+                      <NavIcon view={item.key as ViewKey} />
+                      {item.label}
+                    </span>
+                  </button>
+                ))}
+            </nav>
+          </div>
 
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {metrics.map((metric) => (
-              <article key={metric.label} className="rounded-[1.5rem] border border-white/50 bg-panel p-5 shadow-panel">
-                <span className="text-sm text-ink/60">{metric.label}</span>
-                <strong className="mt-3 block text-4xl font-semibold">{metric.value}</strong>
-                <p className="mt-2 text-sm text-ink/60">{metric.hint}</p>
-              </article>
-            ))}
-          </section>
+          <section className="grid gap-6 p-5 md:p-8">
+              {flash ? <FlashBanner flash={flash} /> : null}
 
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {networkStats.map((network) => (
-              <article key={network.key} className="rounded-[1.5rem] border border-white/50 bg-panel p-5 shadow-panel">
-                <span className="inline-flex rounded-full bg-ink/5 px-3 py-1 text-xs uppercase tracking-[0.18em] text-ink/60">
-                  {network.label}
-                </span>
-                <h2 className="mt-4 text-2xl font-semibold">{network.posts} agendamentos</h2>
-                <p className="mt-2 text-sm text-ink/60">
-                  {network.views.toLocaleString("pt-BR")} visualizacoes acumuladas nas midias cadastradas.
-                </p>
-              </article>
-            ))}
-          </section>
+              <ViewHeader
+                title={viewMeta[activeView].title}
+                description={viewMeta[activeView].description}
+                actionLabel={viewMeta[activeView].actionLabel}
+                onAction={viewMeta[activeView].onAction(setActiveView)}
+              />
 
-          {activeView === "dashboard" ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_0.95fr]">
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Proximas publicacoes</h2>
-                  <p className="mt-2 text-sm text-ink/60">Agendamentos prontos para sair em multiplas redes.</p>
-                </div>
-                <div className="overflow-hidden rounded-3xl border border-ink/10">
-                  <table className="min-w-full divide-y divide-ink/10 text-sm">
-                    <thead className="bg-white/50 text-left uppercase tracking-[0.2em] text-ink/50">
-                      <tr>
-                        <th className="px-4 py-3 font-medium">Post</th>
-                        <th className="px-4 py-3 font-medium">Redes</th>
-                        <th className="px-4 py-3 font-medium">Horario</th>
-                        <th className="px-4 py-3 font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-ink/10">
-                      {[...data.schedules]
-                        .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
-                        .slice(0, 4)
-                        .map((schedule) => (
-                          <tr key={schedule.id}>
-                            <td className="px-4 py-4">{schedule.title}</td>
-                            <td className="px-4 py-4 text-ink/65">{formatNetworkList(schedule.networks)}</td>
-                            <td className="px-4 py-4 text-ink/65">{formatDate(schedule.scheduledFor)}</td>
-                            <td className="px-4 py-4">
-                              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
-                                {schedule.status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+              {activeView === "library" ? (
+                <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+                  <Card title="Nova midia" description="Adicione fotos e videos para uso em varias redes.">
+                    <FormGrid action={handleCreateMedia}>
+                      <Field label="Titulo" name="title" placeholder="Ex: video da semana" />
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Arquivo" name="fileName" placeholder="video.mp4" />
+                        <Field label="Categoria" name="category" placeholder="Campanha" />
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <SelectField
+                          label="Tipo"
+                          name="type"
+                          options={[
+                            { label: "Video", value: "video" },
+                            { label: "Imagem", value: "image" },
+                          ]}
+                        />
+                        <Field label="Formato" name="format" placeholder="Reel / Story" />
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Duracao" name="duration" placeholder="00:30 ou Imagem" />
+                        <SelectField
+                          label="Status"
+                          name="status"
+                          options={[
+                            { label: "Ativa", value: "active" },
+                            { label: "Revisao", value: "review" },
+                            { label: "Arquivada", value: "archived" },
+                          ]}
+                        />
+                      </div>
+                      <PrimaryButton label="Salvar midia" />
+                    </FormGrid>
+                  </Card>
 
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Midias em risco</h2>
-                  <p className="mt-2 text-sm text-ink/60">Itens que o algoritmo ja sugere retirar da biblioteca.</p>
-                </div>
-                <div className="grid gap-4">
-                  {suggestedRemovals.length ? (
-                    suggestedRemovals.slice(0, 3).map((item) => {
-                      const health = getMediaHealth(item);
-                      return (
-                        <article key={item.id} className="rounded-[1.4rem] border border-ink/10 bg-white/55 p-5">
-                          <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
-                            Score minimo {health.weakest}
-                          </span>
-                          <h3 className="mt-4 text-lg font-semibold">{item.title}</h3>
-                          <div className="mt-3 grid gap-2 text-sm text-ink/60">
-                            <span>{item.fileName}</span>
-                            <span>
-                              {item.category} · {item.format}
-                            </span>
-                            <span>Media {health.average}/100</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="mt-4 rounded-full bg-red-100 px-4 py-2 text-sm font-medium text-red-700"
-                            onClick={() => removeMedia(item.id)}
-                          >
-                            Remover da biblioteca
-                          </button>
-                        </article>
-                      );
-                    })
-                  ) : (
-                    <div className="rounded-3xl border border-dashed border-ink/15 bg-white/45 p-8 text-sm text-ink/60">
-                      Nenhum item abaixo da faixa critica no momento.
-                    </div>
-                  )}
-                </div>
-              </section>
-            </div>
-          ) : null}
-
-          {activeView === "library" ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Cadastrar midia</h2>
-                  <p className="mt-2 text-sm text-ink/60">Organize fotos e videos com score inicial e categoria.</p>
-                </div>
-                <form
-                  className="grid gap-4"
-                  action={(formData) => {
-                    handleCreateMedia(formData);
-                  }}
-                >
-                  <Field label="Titulo da midia" name="title" placeholder="Ex: teaser do produto" />
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Arquivo" name="fileName" placeholder="video-campanha.mp4" />
-                    <Field label="Categoria" name="category" placeholder="Campanha" />
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <SelectField
-                      label="Tipo"
-                      name="type"
-                      options={[
-                        { label: "Video", value: "video" },
-                        { label: "Imagem", value: "image" },
-                      ]}
-                    />
-                    <Field label="Formato" name="format" placeholder="Reel / Short" />
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Duracao" name="duration" placeholder="00:30 ou Imagem" />
-                    <SelectField
-                      label="Status"
-                      name="status"
-                      options={[
-                        { label: "Ativa", value: "active" },
+                  <Card title="Biblioteca" description="Visual limpo para filtrar, revisar e remover ativos.">
+                    <div className="mb-5 flex flex-wrap gap-2">
+                      {[
+                        { label: "Todos", value: "all" },
+                        { label: "Ativas", value: "active" },
                         { label: "Revisao", value: "review" },
-                        { label: "Arquivada", value: "archived" },
-                      ]}
-                    />
-                  </div>
-                  <button className="mt-2 w-fit rounded-full bg-ember px-5 py-3 font-medium text-white shadow-lg shadow-ember/30">
-                    Salvar midia
-                  </button>
-                </form>
-              </section>
-
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <h2 className="font-display text-3xl">Biblioteca de conteudo</h2>
-                    <p className="mt-2 text-sm text-ink/60">Biblioteca central para agendamento e repostagem.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { label: "Todos", value: "all" },
-                      { label: "Ativas", value: "active" },
-                      { label: "Revisao", value: "review" },
-                      { label: "Arquivadas", value: "archived" },
-                    ].map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() =>
-                          setFilters((current) => ({
-                            ...current,
-                            mediaStatus: option.value as FiltersState["mediaStatus"],
-                          }))
-                        }
-                        className={classNames(
-                          "rounded-full px-4 py-2 text-sm font-medium",
-                          filters.mediaStatus === option.value ? "bg-ember/15 text-ember" : "bg-ink/5 text-ink",
-                        )}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {filteredMedia.length ? (
-                    filteredMedia.map((item) => {
-                      const health = getMediaHealth(item);
-                      return (
-                        <article key={item.id} className="rounded-[1.4rem] border border-ink/10 bg-white/55 p-5">
-                          <span
-                            className={classNames(
-                              "rounded-full px-3 py-1 text-xs font-semibold",
-                              health.underperforming
-                                ? "bg-red-100 text-red-700"
-                                : item.status === "active"
-                                  ? "bg-emerald-100 text-emerald-700"
-                                  : "bg-amber-100 text-amber-700",
-                            )}
-                          >
-                            {item.status}
-                          </span>
-                          <h3 className="mt-4 text-lg font-semibold">{item.title}</h3>
-                          <div className="mt-3 grid gap-2 text-sm text-ink/60">
-                            <span>{item.fileName}</span>
-                            <span>
-                              {item.type} · {item.format} · {item.duration}
-                            </span>
-                            <span>
-                              {item.category} · Criada em {formatDate(item.createdAt)}
-                            </span>
-                          </div>
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            {(Object.keys(item.stats) as NetworkKey[])
-                              .filter((network) => item.stats[network].views > 0)
-                              .map((network) => (
-                                <span
-                                  key={network}
-                                  className={classNames(
-                                    "rounded-xl px-3 py-2 text-xs font-medium",
-                                    item.stats[network].score < 35
-                                      ? "bg-red-100 text-red-700"
-                                      : "bg-emerald-100 text-emerald-700",
-                                  )}
-                                >
-                                  {networkLabels[network]} {item.stats[network].score}/100
-                                </span>
-                              ))}
-                          </div>
-                          <div className="mt-4 flex flex-wrap gap-3">
-                            <button
-                              type="button"
-                              className="rounded-full bg-ink/5 px-4 py-2 text-sm font-medium"
-                              onClick={() => refreshStats(item.id)}
-                            >
-                              Atualizar estatisticas
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-full bg-red-100 px-4 py-2 text-sm font-medium text-red-700"
-                              onClick={() => removeMedia(item.id)}
-                            >
-                              Remover
-                            </button>
-                          </div>
-                        </article>
-                      );
-                    })
-                  ) : (
-                    <div className="rounded-3xl border border-dashed border-ink/15 bg-white/45 p-8 text-sm text-ink/60">
-                      Nenhuma midia encontrada com esse filtro.
-                    </div>
-                  )}
-                </div>
-              </section>
-            </div>
-          ) : null}
-
-          {activeView === "scheduler" ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Agendar postagem</h2>
-                  <p className="mt-2 text-sm text-ink/60">
-                    Publique em varias redes de uma vez e associe uma regra de repostagem se quiser.
-                  </p>
-                </div>
-                <form
-                  className="grid gap-4"
-                  action={(formData) => {
-                    handleCreateSchedule(formData);
-                  }}
-                >
-                  <Field label="Nome interno do post" name="title" placeholder="Lancamento da semana" />
-                  <SelectField
-                    label="Midia da biblioteca"
-                    name="mediaId"
-                    options={[
-                      { label: "Sem vinculo", value: "" },
-                      ...data.mediaLibrary.map((item) => ({ label: item.title, value: item.id })),
-                    ]}
-                  />
-                  <fieldset className="grid gap-3">
-                    <legend className="text-sm font-medium">Redes de publicacao</legend>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      {(Object.keys(networkLabels) as NetworkKey[]).map((network) => (
-                        <label key={network} className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-white/70 px-4 py-3">
-                          <input name="networks" type="checkbox" value={network} className="size-4" />
-                          <span>{networkLabels[network]}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </fieldset>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Data e hora" name="scheduledFor" type="datetime-local" />
-                    <SelectField
-                      label="Regra de repostagem"
-                      name="repostRuleId"
-                      options={[
-                        { label: "Sem regra", value: "" },
-                        ...data.repostRules.map((rule) => ({ label: rule.name, value: rule.id })),
-                      ]}
-                    />
-                  </div>
-                  <Field label="Legenda base" name="caption" placeholder="Escreva a base da legenda aqui" />
-                  <button className="mt-2 w-fit rounded-full bg-ember px-5 py-3 font-medium text-white shadow-lg shadow-ember/30">
-                    Criar agendamento
-                  </button>
-                </form>
-              </section>
-
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Fila programada</h2>
-                  <p className="mt-2 text-sm text-ink/60">Visualize rapidamente os proximos disparos por rede.</p>
-                </div>
-                <div className="grid gap-4">
-                  {[...data.schedules]
-                    .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
-                    .map((schedule) => (
-                      <article key={schedule.id} className="rounded-[1.4rem] border border-ink/10 bg-white/55 p-5">
-                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
-                          {schedule.status}
-                        </span>
-                        <h3 className="mt-4 text-lg font-semibold">{schedule.title}</h3>
-                        <div className="mt-3 grid gap-2 text-sm text-ink/60">
-                          <span>{formatDate(schedule.scheduledFor)}</span>
-                          <span>{formatNetworkList(schedule.networks)}</span>
-                          <span>Midia: {getLinkedMediaTitle(schedule.mediaId)}</span>
-                          <span>{schedule.caption}</span>
-                        </div>
-                      </article>
-                    ))}
-                </div>
-              </section>
-            </div>
-          ) : null}
-
-          {activeView === "reposts" ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Configurar algoritmo de repostagem</h2>
-                  <p className="mt-2 text-sm text-ink/60">
-                    Defina score minimo para republicar e score critico para remocao da biblioteca.
-                  </p>
-                </div>
-                <form
-                  className="grid gap-4"
-                  action={(formData) => {
-                    handleCreateRule(formData);
-                  }}
-                >
-                  <Field label="Nome da regra" name="name" placeholder="Repostar vencedores" />
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Score minimo para repostar" name="minScore" type="number" defaultValue="70" />
-                    <Field
-                      label="Score para sugerir remocao"
-                      name="removeBelowScore"
-                      type="number"
-                      defaultValue="35"
-                    />
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Intervalo entre reposts (dias)" name="intervalDays" type="number" defaultValue="14" />
-                    <Field label="Maximo de repostagens" name="maxReposts" type="number" defaultValue="3" />
-                  </div>
-                  <fieldset className="grid gap-3">
-                    <legend className="text-sm font-medium">Redes consideradas</legend>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      {(Object.keys(networkLabels) as NetworkKey[]).map((network) => (
-                        <label key={network} className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-white/70 px-4 py-3">
-                          <input name="ruleNetworks" type="checkbox" value={network} className="size-4" />
-                          <span>{networkLabels[network]}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </fieldset>
-                  <button className="mt-2 w-fit rounded-full bg-ember px-5 py-3 font-medium text-white shadow-lg shadow-ember/30">
-                    Salvar regra
-                  </button>
-                </form>
-              </section>
-
-              <section className="grid gap-5">
-                <div className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                  <div className="mb-5">
-                    <h2 className="font-display text-3xl">Regras e sugestoes</h2>
-                    <p className="mt-2 text-sm text-ink/60">
-                      As sugestoes simulam a leitura de estatisticas das redes para apoiar remocao de midias.
-                    </p>
-                  </div>
-                  <div className="grid gap-4">
-                    {data.repostRules.map((rule) => (
-                      <article key={rule.id} className="rounded-[1.4rem] border border-ink/10 bg-white/55 p-5">
-                        <span
+                        { label: "Arquivadas", value: "archived" },
+                      ].map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() =>
+                            setFilters((current) => ({
+                              ...current,
+                              mediaStatus: option.value as FiltersState["mediaStatus"],
+                            }))
+                          }
                           className={classNames(
-                            "rounded-full px-3 py-1 text-xs font-semibold",
-                            rule.active ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700",
+                            "rounded-full px-4 py-2 text-sm",
+                            filters.mediaStatus === option.value ? "bg-violet text-white" : "bg-violet/6 text-ink/70",
                           )}
                         >
-                          {rule.active ? "ativa" : "pausada"}
-                        </span>
-                        <h3 className="mt-4 text-lg font-semibold">{rule.name}</h3>
-                        <div className="mt-3 grid gap-2 text-sm text-ink/60">
-                          <span>Repostar acima de {rule.minScore}/100</span>
-                          <span>Remover abaixo de {rule.removeBelowScore}/100</span>
-                          <span>
-                            {rule.intervalDays} dias entre ciclos · max {rule.maxReposts} reposts
-                          </span>
-                          <span>{formatNetworkList(rule.networks)}</span>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                </div>
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
 
-                <div className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                  <div className="mb-5">
-                    <h2 className="font-display text-3xl">Midias com baixa performance</h2>
-                    <p className="mt-2 text-sm text-ink/60">Acao manual recomendada apos consolidacao das APIs reais.</p>
-                  </div>
-                  <div className="grid gap-4">
-                    {suggestedRemovals.length ? (
-                      suggestedRemovals.map((item) => {
+                    <div className="grid gap-3">
+                      {filteredMedia.map((item) => {
                         const health = getMediaHealth(item);
                         return (
-                          <article key={item.id} className="rounded-[1.4rem] border border-ink/10 bg-white/55 p-5">
-                            <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
-                              Recomendado remover
-                            </span>
-                            <h3 className="mt-4 text-lg font-semibold">{item.title}</h3>
-                            <div className="mt-3 grid gap-2 text-sm text-ink/60">
-                              <span>Media {health.average}/100</span>
-                              <span>Pior score {health.weakest}/100</span>
-                              <span>{item.fileName}</span>
+                          <article key={item.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <h3 className="font-medium">{item.title}</h3>
+                                <p className="mt-1 text-sm text-ink/55">
+                                  {item.fileName} · {item.format} · {item.category}
+                                </p>
+                              </div>
+                              <span className="rounded-full bg-violet/8 px-3 py-1 text-xs text-violet">{item.status}</span>
                             </div>
-                            <button
-                              type="button"
-                              className="mt-4 rounded-full bg-red-100 px-4 py-2 text-sm font-medium text-red-700"
-                              onClick={() => removeMedia(item.id)}
-                            >
-                              Remover da biblioteca
-                            </button>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {(Object.keys(item.stats) as NetworkKey[])
+                                .filter((network) => item.stats[network].views > 0)
+                                .map((network) => (
+                                  <span
+                                    key={network}
+                                    className={classNames(
+                                      "rounded-full px-3 py-1 text-xs",
+                                      item.stats[network].score < 35 ? "bg-rose-100 text-rose-700" : "bg-violet/8 text-violet",
+                                    )}
+                                  >
+                                    {networkLabels[network]} {item.stats[network].score}/100
+                                  </span>
+                                ))}
+                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
+                                media {health.average}/100
+                              </span>
+                            </div>
+                            <div className="mt-4 flex flex-wrap gap-3">
+                              <SecondaryButton label="Atualizar estatisticas" onClick={() => refreshStats(item.id)} />
+                              <GhostDangerButton label="Remover" onClick={() => removeMedia(item.id)} />
+                            </div>
                           </article>
                         );
-                      })
-                    ) : (
-                      <div className="rounded-3xl border border-dashed border-ink/15 bg-white/45 p-8 text-sm text-ink/60">
-                        Nenhuma midia abaixo do limite definido pelas regras.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </section>
-            </div>
-          ) : null}
+                      })}
+                    </div>
+                  </Card>
+                </section>
+              ) : null}
 
-          {activeView === "users" && isAdmin ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Criar usuario</h2>
-                  <p className="mt-2 text-sm text-ink/60">
-                    Apenas administradores podem cadastrar novos acessos ao sistema.
-                  </p>
-                </div>
-                <form
-                  className="grid gap-4"
-                  action={(formData) => {
-                    handleCreateUser(formData);
-                  }}
-                >
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Nome" name="name" placeholder="Nome completo" />
-                    <SelectField
-                      label="Perfil"
-                      name="role"
-                      options={[
-                        { label: "Editor", value: "editor" },
-                        { label: "Admin", value: "admin" },
-                      ]}
-                    />
-                  </div>
-                  <Field label="E-mail" name="email" type="email" placeholder="usuario@empresa.com" />
-                  <Field label="Senha" name="password" placeholder="Crie uma senha" />
-                  <button className="mt-2 w-fit rounded-full bg-ember px-5 py-3 font-medium text-white shadow-lg shadow-ember/30">
-                    Cadastrar usuario
-                  </button>
-                </form>
-              </section>
-
-              <section className="rounded-[2rem] border border-white/50 bg-panel p-6 shadow-panel">
-                <div className="mb-5">
-                  <h2 className="font-display text-3xl">Usuarios cadastrados</h2>
-                  <p className="mt-2 text-sm text-ink/60">Controle simples de acessos do painel.</p>
-                </div>
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {data.users.map((user) => (
-                    <article key={user.id} className="rounded-[1.4rem] border border-ink/10 bg-white/55 p-5">
-                      <span
-                        className={classNames(
-                          "rounded-full px-3 py-1 text-xs font-semibold",
-                          user.role === "admin" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700",
-                        )}
-                      >
-                        {user.role}
-                      </span>
-                      <h3 className="mt-4 text-lg font-semibold">{user.name}</h3>
-                      <div className="mt-3 grid gap-2 text-sm text-ink/60">
-                        <span>{user.email}</span>
-                        <span>Criado em {formatDate(user.createdAt)}</span>
+              {activeView === "scheduler" ? (
+                <section className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+                  <Card title="Novo agendamento" description="Programe uma postagem para varias redes ao mesmo tempo.">
+                    <FormGrid action={handleCreateSchedule}>
+                      <Field label="Titulo interno" name="title" placeholder="Lote de domingo" />
+                      <SelectField
+                        label="Midia"
+                        name="mediaId"
+                        options={[
+                          { label: "Sem vinculo", value: "" },
+                          ...data.mediaLibrary.map((item) => ({ label: item.title, value: item.id })),
+                        ]}
+                      />
+                      <CheckGrid legend="Redes">
+                        {(Object.keys(networkLabels) as NetworkKey[]).map((network) => (
+                          <CheckCard key={network} name="networks" value={network} label={networkLabels[network]} />
+                        ))}
+                      </CheckGrid>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Data e hora" name="scheduledFor" type="datetime-local" />
+                        <SelectField
+                          label="Regra de repost"
+                          name="repostRuleId"
+                          options={[
+                            { label: "Sem regra", value: "" },
+                            ...data.repostRules.map((rule) => ({ label: rule.name, value: rule.id })),
+                          ]}
+                        />
                       </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            </div>
-          ) : null}
-        </section>
+                      <Field label="Legenda base" name="caption" placeholder="Legenda adaptavel por rede" />
+                      <PrimaryButton label="Salvar agendamento" />
+                    </FormGrid>
+                  </Card>
+
+                  <Card title="Fila programada" description="Timeline clara dos proximos disparos.">
+                    <div className="grid gap-3">
+                      {[...data.schedules]
+                        .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
+                        .map((schedule) => (
+                          <article key={schedule.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <h3 className="font-medium">{schedule.title}</h3>
+                                <p className="mt-1 text-sm text-ink/55">{formatNetworkList(schedule.networks)}</p>
+                              </div>
+                              <span className="text-sm text-violet">{formatDate(schedule.scheduledFor)}</span>
+                            </div>
+                            <p className="mt-3 text-sm text-ink/60">Midia: {getLinkedMediaTitle(schedule.mediaId)}</p>
+                            <p className="mt-1 text-sm text-ink/60">{schedule.caption}</p>
+                          </article>
+                        ))}
+                    </div>
+                  </Card>
+                </section>
+              ) : null}
+
+              {activeView === "reposts" ? (
+                <section className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+                  <Card title="Nova regra de repostagem" description="Defina como o algoritmo deve reciclar ou cortar conteudos.">
+                    <FormGrid action={handleCreateRule}>
+                      <Field label="Nome da regra" name="name" placeholder="Repostar melhores clips" />
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Score minimo" name="minScore" type="number" defaultValue="70" />
+                        <Field label="Score para remocao" name="removeBelowScore" type="number" defaultValue="35" />
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Intervalo em dias" name="intervalDays" type="number" defaultValue="14" />
+                        <Field label="Maximo de reposts" name="maxReposts" type="number" defaultValue="3" />
+                      </div>
+                      <CheckGrid legend="Redes consideradas">
+                        {(Object.keys(networkLabels) as NetworkKey[]).map((network) => (
+                          <CheckCard key={network} name="ruleNetworks" value={network} label={networkLabels[network]} />
+                        ))}
+                      </CheckGrid>
+                      <PrimaryButton label="Salvar regra" />
+                    </FormGrid>
+                  </Card>
+
+                  <div className="grid gap-5">
+                    <Card title="Regras ativas" description="Visualizacao rapida das automatizacoes de repost.">
+                      <div className="grid gap-3">
+                        {data.repostRules.map((rule) => (
+                          <article key={rule.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <h3 className="font-medium">{rule.name}</h3>
+                              <span className={classNames("rounded-full px-3 py-1 text-xs", rule.active ? "bg-violet/8 text-violet" : "bg-slate-100 text-slate-600")}>
+                                {rule.active ? "ativa" : "pausada"}
+                              </span>
+                            </div>
+                            <div className="mt-3 grid gap-1 text-sm text-ink/60">
+                              <span>Reposta acima de {rule.minScore}/100</span>
+                              <span>Remove abaixo de {rule.removeBelowScore}/100</span>
+                              <span>{rule.intervalDays} dias · max {rule.maxReposts} reposts</span>
+                              <span>{formatNetworkList(rule.networks)}</span>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </Card>
+
+                    <Card title="Itens para revisar" description="Baixa performance identificada nas estatisticas atuais.">
+                      <div className="grid gap-3">
+                        {suggestedRemovals.map((item) => {
+                          const health = getMediaHealth(item);
+                          return (
+                            <article key={item.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                              <h3 className="font-medium">{item.title}</h3>
+                              <p className="mt-2 text-sm text-ink/60">Media {health.average}/100 · pior score {health.weakest}/100</p>
+                              <div className="mt-3">
+                                <GhostDangerButton label="Remover da biblioteca" onClick={() => removeMedia(item.id)} />
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </Card>
+                  </div>
+                </section>
+              ) : null}
+
+              {activeView === "users" ? (
+                <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+                  <Card title="Novo usuario" description="Admins podem criar novos acessos para a operacao.">
+                    <FormGrid action={handleCreateUser}>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Nome" name="name" placeholder="Nome completo" />
+                        <SelectField
+                          label="Perfil"
+                          name="role"
+                          options={[
+                            { label: "Editor", value: "editor" },
+                            { label: "Admin", value: "admin" },
+                          ]}
+                        />
+                      </div>
+                      <Field label="E-mail" name="email" type="email" placeholder="usuario@empresa.com" />
+                      <Field label="Senha" name="password" type="text" placeholder="Defina a senha inicial" />
+                      <PrimaryButton label="Criar usuario" />
+                    </FormGrid>
+                  </Card>
+
+                  <Card title="Gerenciar usuarios" description="Edite nome, e-mail, senha e papel sem sair do painel.">
+                    <div className="grid gap-3">
+                      {data.users.map((user) => (
+                        <article key={user.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                          {editingUserId === user.id ? (
+                            <form
+                              className="grid gap-4"
+                              action={(formData) => {
+                                handleUpdateUser(user.id, formData);
+                              }}
+                            >
+                              <div className="grid gap-4 md:grid-cols-2">
+                                <Field label="Nome" name="name" defaultValue={user.name} />
+                                <SelectField
+                                  label="Perfil"
+                                  name="role"
+                                  defaultValue={user.role}
+                                  options={[
+                                    { label: "Editor", value: "editor" },
+                                    { label: "Admin", value: "admin" },
+                                  ]}
+                                />
+                              </div>
+                              <Field label="E-mail" name="email" type="email" defaultValue={user.email} />
+                              <Field label="Senha" name="password" type="text" defaultValue={user.password} />
+                              <div className="flex flex-wrap gap-3">
+                                <PrimaryButton label="Salvar alteracoes" />
+                                <SecondaryButton label="Cancelar" onClick={() => setEditingUserId(null)} type="button" />
+                              </div>
+                            </form>
+                          ) : (
+                            <>
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <h3 className="font-medium">{user.name}</h3>
+                                  <p className="mt-1 text-sm text-ink/55">{user.email}</p>
+                                </div>
+                                <span className="rounded-full bg-violet/8 px-3 py-1 text-xs text-violet">{user.role}</span>
+                              </div>
+                              <p className="mt-3 text-sm text-ink/50">Criado em {formatDate(user.createdAt)}</p>
+                              <div className="mt-4 flex flex-wrap gap-3">
+                                <SecondaryButton label="Editar" onClick={() => setEditingUserId(user.id)} />
+                                <GhostDangerButton label="Remover" onClick={() => deleteUser(user.id)} />
+                              </div>
+                            </>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  </Card>
+                </section>
+              ) : null}
+
+              {activeView === "config" ? (
+                <section className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
+                  <Card title="Conexoes por API" description="Area dedicada para configurar cada integracao com as redes sociais.">
+                    <div className="grid gap-3">
+                      {data.connections.map((connection) => (
+                        <article key={connection.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                          {editingConnectionId === connection.id ? (
+                            <form
+                              className="grid gap-4"
+                              action={(formData) => {
+                                handleUpdateConnection(connection.id, formData);
+                              }}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <h3 className="font-medium">{networkLabels[connection.network]}</h3>
+                                <SelectField
+                                  label="Status"
+                                  name="status"
+                                  defaultValue={connection.status}
+                                  options={[
+                                    { label: "Conectado", value: "connected" },
+                                    { label: "Pendente", value: "pending" },
+                                    { label: "Desconectado", value: "disconnected" },
+                                  ]}
+                                />
+                              </div>
+                              <Field label="Nome da conta" name="accountName" defaultValue={connection.accountName} placeholder="@sua_conta" />
+                              <Field label="API key" name="apiKey" defaultValue={connection.apiKey} placeholder="Cole a chave da API" />
+                              <Field label="API secret" name="apiSecret" defaultValue={connection.apiSecret} placeholder="Cole o segredo da API" />
+                              <Field label="Access token" name="accessToken" defaultValue={connection.accessToken} placeholder="Token de acesso" />
+                              <Field label="Refresh token" name="refreshToken" defaultValue={connection.refreshToken} placeholder="Token de refresh" />
+                              <Field label="Webhook URL" name="webhookUrl" defaultValue={connection.webhookUrl} placeholder="https://..." />
+                              <div className="flex flex-wrap gap-3">
+                                <PrimaryButton label="Salvar conexao" />
+                                <SecondaryButton label="Cancelar" onClick={() => setEditingConnectionId(null)} type="button" />
+                              </div>
+                            </form>
+                          ) : (
+                            <>
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <h3 className="font-medium">{networkLabels[connection.network]}</h3>
+                                  <p className="mt-1 text-sm text-ink/55">
+                                    {connection.accountName || "Conta ainda nao configurada"}
+                                  </p>
+                                </div>
+                                <StatusPill status={connection.status} />
+                              </div>
+                              <div className="mt-3 grid gap-1 text-sm text-ink/60">
+                                <span>API key: {connection.apiKey ? "configurada" : "pendente"}</span>
+                                <span>Access token: {connection.accessToken ? "configurado" : "pendente"}</span>
+                                <span>
+                                  Ultima sincronizacao: {connection.lastSync ? formatDate(connection.lastSync) : "ainda nao executada"}
+                                </span>
+                              </div>
+                              <div className="mt-4">
+                                <SecondaryButton label="Editar conexao" onClick={() => setEditingConnectionId(connection.id)} />
+                              </div>
+                            </>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  </Card>
+
+                  <div className="grid gap-5">
+                    <Card title="Boas praticas de conexao" description="Checklist de UX para quando voce plugar as APIs reais.">
+                      <ul className="grid gap-3 text-sm leading-6 text-ink/60">
+                        <li>Defina uma conta por rede para reduzir erro operacional.</li>
+                        <li>Salve tokens com rotacao e data de ultima sincronizacao.</li>
+                        <li>Centralize callbacks e webhooks por ambiente.</li>
+                        <li>Mostre estado de autenticacao antes de liberar agendamentos.</li>
+                      </ul>
+                    </Card>
+
+                    <Card title="Resumo tecnico" description="Base pronta para integrar publicacao, analytics e refresh de credenciais.">
+                      <div className="grid gap-3 text-sm text-ink/60">
+                        <p>Esta aba foi criada para concentrar os fluxos de conexao por API com Instagram, Facebook, YouTube Shorts e TikTok.</p>
+                        <p>Por enquanto os dados ficam salvos localmente, mas a estrutura do estado ja separa credenciais, conta conectada e ultimo sync.</p>
+                      </div>
+                    </Card>
+                  </div>
+                </section>
+              ) : null}
+          </section>
+        </div>
       </div>
     </main>
   );
 }
 
-type FieldProps = {
+const viewMeta: Record<
+  ViewKey,
+  {
+    title: string;
+    description: string;
+    actionLabel: string;
+    onAction: (setActiveView: (view: ViewKey) => void) => (() => void) | undefined;
+  }
+> = {
+  library: {
+    title: "Biblioteca",
+    description: "Gerencie arquivos, filtros e conteudos que continuam ou saem da base.",
+    actionLabel: "Novo agendamento",
+    onAction: (setActiveView) => () => setActiveView("scheduler"),
+  },
+  scheduler: {
+    title: "Agendamentos",
+    description: "Planeje a distribuicao de posts de forma simultanea entre redes.",
+    actionLabel: "Abrir conexoes",
+    onAction: (setActiveView) => () => setActiveView("config"),
+  },
+  reposts: {
+    title: "Repostagem",
+    description: "Configure os gatilhos de reaproveitamento e de remocao por score.",
+    actionLabel: "Ajustar conexoes",
+    onAction: (setActiveView) => () => setActiveView("config"),
+  },
+  users: {
+    title: "Usuarios",
+    description: "Crie, edite e revise acessos, nomes, e-mails e senhas.",
+    actionLabel: "Novo usuario",
+    onAction: () => undefined,
+  },
+  config: {
+    title: "Config",
+    description: "Central de conexoes e parametros de integracao via API.",
+    actionLabel: "Ir para agendamentos",
+    onAction: (setActiveView) => () => setActiveView("scheduler"),
+  },
+};
+
+const pageTitleMap: Record<ViewKey, string> = {
+  library: "Biblioteca",
+  scheduler: "Agendamentos",
+  reposts: "Repostagem",
+  users: "Usuarios",
+  config: "Config",
+};
+
+function ViewHeader({
+  title,
+  description,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  description: string;
+  actionLabel: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+      <div>
+        <h2 className="font-display text-3xl tracking-[-0.04em]">{title}</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-ink/60">{description}</p>
+      </div>
+      {onAction ? (
+        <button type="button" onClick={onAction} className="rounded-full border border-violet/15 px-4 py-2 text-sm font-medium text-violet">
+          {actionLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function LogoMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={classNames(
+        "flex items-center justify-center rounded-[1.4rem] border border-violet/12 bg-white shadow-sm",
+        compact ? "size-14" : "size-16",
+      )}
+    >
+      <HeartPlayIcon className={compact ? "size-8 text-rose-600" : "size-9 text-rose-600"} />
+    </div>
+  );
+}
+
+function IllustrationRow({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <article className="flex items-start gap-4 rounded-[1.4rem] border border-violet/10 bg-violet/5 p-4">
+      <div className="flex size-11 items-center justify-center rounded-2xl bg-white">{icon}</div>
+      <div>
+        <h3 className="font-medium">{title}</h3>
+        <p className="mt-1 text-sm leading-6 text-ink/58">{description}</p>
+      </div>
+    </article>
+  );
+}
+
+function NavIcon({ view }: { view: ViewKey }) {
+  switch (view) {
+    case "library":
+      return <LibraryIcon className="size-4" />;
+    case "scheduler":
+      return <CalendarIcon className="size-4" />;
+    case "reposts":
+      return <CycleIcon className="size-4" />;
+    case "users":
+      return <UsersIcon className="size-4" />;
+    case "config":
+      return <ConnectionIcon className="size-4" />;
+    default:
+      return <HeartPlayIcon className="size-4" />;
+  }
+}
+
+function HeartPlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M7.1 6A3.6 3.6 0 0 0 3.5 9.6c0 4.3 6.5 7.9 7.8 8.6a1.2 1.2 0 0 0 1.1 0c1.3-.7 7.8-4.3 7.8-8.6A3.6 3.6 0 0 0 16.6 6c-1.2 0-2.3.5-3 1.7C12.9 6.5 11.8 6 10.6 6c-1 0-2 .3-2.7.9A3.5 3.5 0 0 0 7.1 6Z"
+        fill="currentColor"
+        opacity="0.9"
+      />
+      <path d="M11.4 8.4v6.8l5.4-3.4-5.4-3.4Z" fill="#fca5a5" />
+    </svg>
+  );
+}
+
+function LibraryIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <rect x="4" y="5" width="4" height="14" rx="1.2" fill="currentColor" opacity="0.95" />
+      <rect x="10" y="4" width="4" height="15" rx="1.2" fill="currentColor" opacity="0.72" />
+      <rect x="16" y="7" width="4" height="12" rx="1.2" fill="currentColor" opacity="0.52" />
+    </svg>
+  );
+}
+
+function ConnectionIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M9.2 8.2 6.8 10.6a2.4 2.4 0 0 0 0 3.4 2.4 2.4 0 0 0 3.4 0l2.3-2.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="m14.8 15.8 2.4-2.4a2.4 2.4 0 0 0 0-3.4 2.4 2.4 0 0 0-3.4 0l-2.3 2.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="m9.8 14.2 4.4-4.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CalendarIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <rect x="4" y="6" width="16" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M8 4v4M16 4v4M4 10h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="9" cy="14" r="1" fill="currentColor" />
+      <circle cx="15" cy="14" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function CycleIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M7 7h5V3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M17 17h-5v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7.6 17.6A6 6 0 0 1 6 9.5L7 8.3M16.4 6.4A6 6 0 0 1 18 14.5L17 15.7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function UsersIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <circle cx="9" cy="9" r="3" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="17" cy="10" r="2.4" stroke="currentColor" strokeWidth="1.8" opacity="0.7" />
+      <path d="M4.5 18.5a4.5 4.5 0 0 1 9 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M14.5 18.5a3.5 3.5 0 0 1 5 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.7" />
+    </svg>
+  );
+}
+
+function Card({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+      <div className="mb-5">
+        <h3 className="font-display text-2xl tracking-[-0.04em]">{title}</h3>
+        <p className="mt-2 text-sm leading-6 text-ink/58">{description}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function FormGrid({ action, children }: { action: (formData: FormData) => void; children: React.ReactNode }) {
+  return <form action={action} className="grid gap-4">{children}</form>;
+}
+
+function FlashBanner({ flash, className }: { flash: NonNullable<FlashState>; className?: string }) {
+  return (
+    <div
+      className={classNames(
+        "rounded-2xl px-4 py-3 text-sm",
+        flash.kind === "error" ? "bg-rose-100 text-rose-700" : "bg-violet/10 text-violet",
+        className,
+      )}
+    >
+      {flash.message}
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: SocialConnection["status"] }) {
+  return (
+    <span
+      className={classNames(
+        "rounded-full px-3 py-1 text-xs",
+        status === "connected"
+          ? "bg-emerald-100 text-emerald-700"
+          : status === "pending"
+            ? "bg-amber-100 text-amber-700"
+            : "bg-slate-100 text-slate-600",
+      )}
+    >
+      {status}
+    </span>
+  );
+}
+
+function CheckGrid({ legend, children }: { legend: string; children: React.ReactNode }) {
+  return (
+    <fieldset className="grid gap-3">
+      <legend className="text-sm font-medium text-ink/75">{legend}</legend>
+      <div className="grid gap-3 md:grid-cols-2">{children}</div>
+    </fieldset>
+  );
+}
+
+function CheckCard({ name, value, label }: { name: string; value: string; label: string }) {
+  return (
+    <label className="flex items-center gap-3 rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+      <input name={name} type="checkbox" value={value} className="size-4 accent-violet" />
+      <span className="text-sm text-ink/75">{label}</span>
+    </label>
+  );
+}
+
+function PrimaryButton({ label }: { label: string }) {
+  return <button className="mt-2 rounded-full bg-violet px-5 py-3 text-sm font-medium text-white">{label}</button>;
+}
+
+function SecondaryButton({
+  label,
+  onClick,
+  type = "button",
+}: {
+  label: string;
+  onClick?: () => void;
+  type?: "button" | "submit";
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      className="rounded-full border border-violet/15 px-4 py-2 text-sm font-medium text-violet"
+    >
+      {label}
+    </button>
+  );
+}
+
+function GhostDangerButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="rounded-full bg-rose-100 px-4 py-2 text-sm font-medium text-rose-700">
+      {label}
+    </button>
+  );
+}
+
+function Field({
+  label,
+  name,
+  placeholder,
+  type = "text",
+  defaultValue,
+}: {
   label: string;
   name: string;
   placeholder?: string;
   type?: string;
   defaultValue?: string;
-};
-
-function Field({ label, name, placeholder, type = "text", defaultValue }: FieldProps) {
+}) {
   return (
     <label className="grid gap-2 text-sm font-medium">
-      <span>{label}</span>
+      <span className="text-ink/75">{label}</span>
       <input
         name={name}
         type={type}
-        placeholder={placeholder}
         defaultValue={defaultValue}
+        placeholder={placeholder}
         required
-        className="rounded-2xl border border-ink/10 bg-white/80 px-4 py-3 outline-none transition focus:border-ember"
+        className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 outline-none transition focus:border-violet focus:bg-white"
       />
     </label>
   );
 }
 
-type SelectFieldProps = {
+function SelectField({
+  label,
+  name,
+  options,
+  defaultValue,
+}: {
   label: string;
   name: string;
   options: Array<{ label: string; value: string }>;
-};
-
-function SelectField({ label, name, options }: SelectFieldProps) {
+  defaultValue?: string;
+}) {
   return (
     <label className="grid gap-2 text-sm font-medium">
-      <span>{label}</span>
+      <span className="text-ink/75">{label}</span>
       <select
         name={name}
-        className="rounded-2xl border border-ink/10 bg-white/80 px-4 py-3 outline-none transition focus:border-ember"
+        defaultValue={defaultValue}
+        className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 outline-none transition focus:border-violet focus:bg-white"
       >
         {options.map((option) => (
-          <option key={option.value || option.label} value={option.value}>
+          <option key={`${name}-${option.value}-${option.label}`} value={option.value}>
             {option.label}
           </option>
         ))}

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PulsePost Admin",
+  title: "Megumi Tarot - Media Center",
   description: "Agendamento multirrede com biblioteca de midias e regras de repostagem.",
 };
 
