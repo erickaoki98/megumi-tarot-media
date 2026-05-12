@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { networkLabels, seedState, STORAGE_KEY } from "@/lib/constants";
+import { networkLabels, seedState, SESSION_STORAGE_KEY, STORAGE_KEY } from "@/lib/constants";
 import { classNames, formatDate, formatNetworkList, getMediaHealth } from "@/lib/utils";
 import {
   AppUser,
@@ -24,6 +24,125 @@ const defaultFilters: FiltersState = {
   mediaStatus: "all",
 };
 
+type ConnectionGuideField = {
+  name: "clientId" | "clientSecret" | "accessToken" | "refreshToken" | "accountId" | "pageId" | "redirectUri" | "scopes" | "webhookUrl" | "tokenExpiresAt";
+  label: string;
+  placeholder: string;
+  required?: boolean;
+};
+
+const connectionGuides: Record<
+  NetworkKey,
+  {
+    summary: string;
+    whyCurrentFieldsWereWrong: string;
+    officialLinks: Array<{ label: string; href: string }>;
+    steps: string[];
+    fields: ConnectionGuideField[];
+  }
+> = {
+  instagram: {
+    summary: "Para publicar no Instagram, a conta precisa ser profissional e vinculada a uma Pagina do Facebook. O fluxo oficial usa a API da plataforma do Instagram com token de usuario e IDs da conta/pagina.",
+    whyCurrentFieldsWereWrong: "Pedir apenas API key, secret e webhook era generico demais. Para Instagram, o essencial e a conta profissional vinculada, o token correto e os IDs da conta e da pagina.",
+    officialLinks: [
+      { label: "Instagram Platform Content Publishing", href: "https://developers.facebook.com/docs/instagram-platform/content-publishing/" },
+      { label: "Meta Permissions Reference", href: "https://developers.facebook.com/docs/permissions/reference" },
+    ],
+    steps: [
+      "No Meta for Developers, crie um app e adicione Instagram Platform e Facebook Login for Business.",
+      "Converta o Instagram para conta profissional e vincule a conta a uma Pagina do Facebook.",
+      "No app da Meta, gere um token de usuario de longa duracao com as permissoes de leitura e publicacao do Instagram.",
+      "Copie o Instagram Professional Account ID e o Facebook Page ID para os campos abaixo.",
+      "Cadastre a Redirect URI do seu fluxo OAuth e salve as permissoes utilizadas.",
+    ],
+    fields: [
+      { name: "clientId", label: "Meta App ID", placeholder: "App ID da Meta", required: true },
+      { name: "clientSecret", label: "Meta App Secret", placeholder: "App Secret da Meta", required: true },
+      { name: "accessToken", label: "Long-Lived User Access Token", placeholder: "Token de usuario de longa duracao", required: true },
+      { name: "accountId", label: "Instagram Professional Account ID", placeholder: "1784..." , required: true},
+      { name: "pageId", label: "Facebook Page ID vinculada", placeholder: "ID da pagina vinculada", required: true },
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/meta/callback" },
+      { name: "scopes", label: "Permissoes (scopes)", placeholder: "instagram_business_basic, instagram_business_content_publish, pages_show_list" },
+      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
+    ],
+  },
+  facebook: {
+    summary: "Para agendar posts no Facebook, o fluxo oficial usa Page Access Token e o ID da Pagina. O agendamento depois usa parametros como scheduled_publish_time no post, nao na configuracao do app.",
+    whyCurrentFieldsWereWrong: "API key generica nao resolve o agendamento de posts. O que importa aqui e o token da Pagina, a Pagina correta e as permissoes de Pages para publicar.",
+    officialLinks: [
+      { label: "Meta Page Feed Reference", href: "https://developers.facebook.com/docs/graph-api/reference/page/feed/" },
+      { label: "Meta Permissions Reference", href: "https://developers.facebook.com/docs/permissions/reference" },
+    ],
+    steps: [
+      "No Meta for Developers, use um app com Facebook Login e acesso a Pages.",
+      "Autorize um usuario com acesso administrador/editor da Pagina.",
+      "Troque o token de usuario por um token da Pagina que tenha permissao de publicar.",
+      "Copie o Facebook Page ID e o Page Access Token para esta configuracao.",
+      "Use as permissoes de Pages necessarias para leitura e publicacao.",
+    ],
+    fields: [
+      { name: "clientId", label: "Meta App ID", placeholder: "App ID da Meta", required: true },
+      { name: "clientSecret", label: "Meta App Secret", placeholder: "App Secret da Meta", required: true },
+      { name: "accessToken", label: "Page Access Token", placeholder: "Token da Pagina", required: true },
+      { name: "pageId", label: "Facebook Page ID", placeholder: "ID da pagina", required: true },
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/facebook/callback" },
+      { name: "scopes", label: "Permissoes (scopes)", placeholder: "pages_manage_posts, pages_show_list, pages_read_engagement" },
+      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
+    ],
+  },
+  youtube: {
+    summary: "Para upload e agendamento no YouTube, a documentacao oficial usa OAuth 2.0. API key sozinha nao basta para subir videos; o fluxo precisa de client ID, client secret, refresh token e depois privacyStatus/private com publishAt na chamada de upload.",
+    whyCurrentFieldsWereWrong: "Pedir API key era insuficiente para uploads e agendamentos. O caminho correto para publicar e OAuth com refresh token e identificacao do canal.",
+    officialLinks: [
+      { label: "YouTube videos.insert", href: "https://developers.google.com/youtube/v3/docs/videos/insert" },
+      { label: "YouTube Scheduled Publishing", href: "https://developers.google.com/youtube/v3/docs/videos#status.publishAt" },
+    ],
+    steps: [
+      "No Google Cloud Console, crie um projeto e habilite a YouTube Data API v3.",
+      "Crie credenciais OAuth 2.0 do tipo Web application.",
+      "Configure a Redirect URI autorizada do seu sistema.",
+      "Conclua o consentimento OAuth para o canal desejado e capture o refresh token.",
+      "Salve o Client ID, Client Secret, Refresh Token e o Channel ID abaixo.",
+    ],
+    fields: [
+      { name: "clientId", label: "OAuth Client ID", placeholder: "Client ID do Google", required: true },
+      { name: "clientSecret", label: "OAuth Client Secret", placeholder: "Client Secret do Google", required: true },
+      { name: "refreshToken", label: "Refresh Token", placeholder: "Refresh token OAuth", required: true },
+      { name: "accountId", label: "YouTube Channel ID", placeholder: "UC..." , required: true},
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/youtube/callback", required: true },
+      { name: "scopes", label: "Permissoes (scopes)", placeholder: "https://www.googleapis.com/auth/youtube.upload", required: true },
+      { name: "accessToken", label: "Access Token atual", placeholder: "Token atual, se quiser armazenar localmente" },
+      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
+    ],
+  },
+  tiktok: {
+    summary: "Para posting no TikTok, o fluxo oficial usa OAuth com access token e open_id. Para upload/publicacao, tambem pode exigir approved scopes e dominio/URL prefix verificados dependendo do modo de envio.",
+    whyCurrentFieldsWereWrong: "Webhook e API key generica nao bastam. O TikTok precisa de Client Key/Secret, access token, refresh token e open_id para identificar o criador autenticado.",
+    officialLinks: [
+      { label: "TikTok Content Posting API Get Started", href: "https://developers.tiktok.com/doc/content-posting-api-get-started" },
+      { label: "TikTok Upload Content Guide", href: "https://developers.tiktok.com/doc/content-posting-api-reference-upload-video" },
+    ],
+    steps: [
+      "No TikTok for Developers, crie um app e habilite o produto de Content Posting.",
+      "Configure Login Kit/OAuth e a Redirect URI autorizada.",
+      "Passe pela autorizacao do criador e capture access token, refresh token e open_id.",
+      "Se for usar envio por URL, confirme o dominio ou URL prefix aceito pelo app.",
+      "Salve tambem os scopes aprovados para publicacao e upload.",
+    ],
+    fields: [
+      { name: "clientId", label: "Client Key", placeholder: "Client Key do TikTok", required: true },
+      { name: "clientSecret", label: "Client Secret", placeholder: "Client Secret do TikTok", required: true },
+      { name: "accessToken", label: "Access Token", placeholder: "Access token do criador", required: true },
+      { name: "refreshToken", label: "Refresh Token", placeholder: "Refresh token do criador", required: true },
+      { name: "accountId", label: "Open ID", placeholder: "open_id retornado pelo OAuth", required: true },
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/tiktok/callback", required: true },
+      { name: "webhookUrl", label: "Verified Domain / URL Prefix", placeholder: "https://media.megumitarot.com.br" },
+      { name: "scopes", label: "Permissoes (scopes)", placeholder: "video.publish, video.upload", required: true },
+      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
+    ],
+  },
+};
+
 function loadState(): PersistedState {
   if (typeof window === "undefined") {
     return seedState;
@@ -36,14 +155,26 @@ function loadState(): PersistedState {
   }
 
   try {
-    return {
-      ...seedState,
-      ...JSON.parse(stored),
-    } as PersistedState;
+    const parsed = JSON.parse(stored) as Partial<PersistedState>;
+    return normalizeState(parsed);
   } catch {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seedState));
     return seedState;
   }
+}
+
+function normalizeState(raw: Partial<PersistedState>): PersistedState {
+  return {
+    users: Array.isArray(raw.users) && raw.users.length ? raw.users : seedState.users,
+    mediaLibrary: Array.isArray(raw.mediaLibrary) && raw.mediaLibrary.length ? raw.mediaLibrary : seedState.mediaLibrary,
+    schedules: Array.isArray(raw.schedules) ? raw.schedules : seedState.schedules,
+    repostRules: Array.isArray(raw.repostRules) ? raw.repostRules : seedState.repostRules,
+    connections: seedState.connections.map((seedConnection) => {
+      const current = raw.connections?.find((connection) => connection.network === seedConnection.network || connection.id === seedConnection.id);
+      return { ...seedConnection, ...current };
+    }),
+    audit: Array.isArray(raw.audit) ? raw.audit : seedState.audit,
+  };
 }
 
 function saveState(state: PersistedState) {
@@ -70,7 +201,12 @@ export function PulsePostApp() {
   const [editingConnectionId, setEditingConnectionId] = useState<string | null>(null);
 
   useEffect(() => {
-    setData(loadState());
+    const nextState = loadState();
+    setData(nextState);
+    const storedSessionUserId = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (storedSessionUserId && nextState.users.some((user) => user.id === storedSessionUserId)) {
+      setSessionUserId(storedSessionUserId);
+    }
   }, []);
 
   useEffect(() => {
@@ -86,6 +222,19 @@ export function PulsePostApp() {
     const pageTitle = pageTitleMap[activeView];
     document.title = `Megumi Tarot - Media Center${pageTitle ? ` - ${pageTitle}` : ""}`;
   }, [activeView]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (sessionUserId) {
+      window.localStorage.setItem(SESSION_STORAGE_KEY, sessionUserId);
+      return;
+    }
+
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  }, [sessionUserId]);
 
   const currentUser = useMemo(
     () => data.users.find((user) => user.id === sessionUserId) ?? null,
@@ -275,11 +424,16 @@ export function PulsePostApp() {
         ? {
             ...connection,
             accountName: String(formData.get("accountName") ?? "").trim(),
-            apiKey: String(formData.get("apiKey") ?? "").trim(),
-            apiSecret: String(formData.get("apiSecret") ?? "").trim(),
+            clientId: String(formData.get("clientId") ?? "").trim(),
+            clientSecret: String(formData.get("clientSecret") ?? "").trim(),
             accessToken: String(formData.get("accessToken") ?? "").trim(),
             refreshToken: String(formData.get("refreshToken") ?? "").trim(),
+            accountId: String(formData.get("accountId") ?? "").trim(),
+            pageId: String(formData.get("pageId") ?? "").trim(),
+            redirectUri: String(formData.get("redirectUri") ?? "").trim(),
+            scopes: String(formData.get("scopes") ?? "").trim(),
             webhookUrl: String(formData.get("webhookUrl") ?? "").trim(),
+            tokenExpiresAt: String(formData.get("tokenExpiresAt") ?? "").trim(),
             status: String(formData.get("status") ?? connection.status) as SocialConnection["status"],
             lastSync:
               String(formData.get("status") ?? connection.status) === "connected" ? new Date().toISOString() : connection.lastSync,
@@ -779,64 +933,81 @@ export function PulsePostApp() {
               ) : null}
 
               {activeView === "config" ? (
-                <section className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
-                  <Card title="Conexoes por API" description="Area dedicada para configurar cada integracao com as redes sociais.">
+                <section className="grid gap-5">
+                  <Card title="Conexoes por API" description="Revisei os campos contra a documentacao oficial e troquei a configuracao generica por orientacoes especificas de cada rede.">
+                    <div className="mb-5 rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
+                      O estado atual do produto ainda nao executa chamadas reais de API para publicar ou agendar. Hoje esta tela prepara os dados corretos para a integracao. O problema principal era pedir o mesmo conjunto de campos para todas as redes, o que nao representa bem os requisitos oficiais.
+                    </div>
                     <div className="grid gap-3">
                       {data.connections.map((connection) => (
                         <article key={connection.id} className="rounded-[1.25rem] border border-violet/10 p-4">
                           {editingConnectionId === connection.id ? (
                             <form
-                              className="grid gap-4"
+                              className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]"
                               action={(formData) => {
                                 handleUpdateConnection(connection.id, formData);
                               }}
                             >
-                              <div className="flex items-center justify-between gap-3">
-                                <h3 className="font-medium">{networkLabels[connection.network]}</h3>
-                                <SelectField
-                                  label="Status"
-                                  name="status"
-                                  defaultValue={connection.status}
-                                  options={[
-                                    { label: "Conectado", value: "connected" },
-                                    { label: "Pendente", value: "pending" },
-                                    { label: "Desconectado", value: "disconnected" },
-                                  ]}
-                                />
+                              <div className="grid gap-4">
+                                <div className="flex items-center justify-between gap-3">
+                                  <h3 className="font-medium">{networkLabels[connection.network]}</h3>
+                                  <SelectField
+                                    label="Status"
+                                    name="status"
+                                    defaultValue={connection.status}
+                                    options={[
+                                      { label: "Conectado", value: "connected" },
+                                      { label: "Pendente", value: "pending" },
+                                      { label: "Desconectado", value: "disconnected" },
+                                    ]}
+                                  />
+                                </div>
+                                <Field label="Nome da conta" name="accountName" defaultValue={connection.accountName} placeholder="@sua_conta" required={false} />
+                                {connectionGuides[connection.network].fields.map((field) => (
+                                  <Field
+                                    key={`${connection.id}-${field.name}`}
+                                    label={field.label}
+                                    name={field.name}
+                                    defaultValue={connection[field.name]}
+                                    placeholder={field.placeholder}
+                                    required={field.required ?? false}
+                                  />
+                                ))}
+                                <div className="flex flex-wrap gap-3">
+                                  <PrimaryButton label="Salvar conexao" />
+                                  <SecondaryButton label="Cancelar" onClick={() => setEditingConnectionId(null)} type="button" />
+                                </div>
                               </div>
-                              <Field label="Nome da conta" name="accountName" defaultValue={connection.accountName} placeholder="@sua_conta" />
-                              <Field label="API key" name="apiKey" defaultValue={connection.apiKey} placeholder="Cole a chave da API" />
-                              <Field label="API secret" name="apiSecret" defaultValue={connection.apiSecret} placeholder="Cole o segredo da API" />
-                              <Field label="Access token" name="accessToken" defaultValue={connection.accessToken} placeholder="Token de acesso" />
-                              <Field label="Refresh token" name="refreshToken" defaultValue={connection.refreshToken} placeholder="Token de refresh" />
-                              <Field label="Webhook URL" name="webhookUrl" defaultValue={connection.webhookUrl} placeholder="https://..." />
-                              <div className="flex flex-wrap gap-3">
-                                <PrimaryButton label="Salvar conexao" />
-                                <SecondaryButton label="Cancelar" onClick={() => setEditingConnectionId(null)} type="button" />
-                              </div>
+
+                              <ConnectionGuide network={connection.network} />
                             </form>
                           ) : (
-                            <>
-                              <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                  <h3 className="font-medium">{networkLabels[connection.network]}</h3>
-                                  <p className="mt-1 text-sm text-ink/55">
-                                    {connection.accountName || "Conta ainda nao configurada"}
-                                  </p>
+                            <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+                              <div>
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div>
+                                    <h3 className="font-medium">{networkLabels[connection.network]}</h3>
+                                    <p className="mt-1 text-sm text-ink/55">
+                                      {connection.accountName || "Conta ainda nao configurada"}
+                                    </p>
+                                  </div>
+                                  <StatusPill status={connection.status} />
                                 </div>
-                                <StatusPill status={connection.status} />
+                                <div className="mt-3 grid gap-1 text-sm text-ink/60">
+                                  <span>{connectionGuides[connection.network].fields[0]?.label}: {connection.clientId ? "configurado" : "pendente"}</span>
+                                  <span>{connectionGuides[connection.network].fields.find((field) => field.name === "accessToken")?.label ?? "Access token"}: {connection.accessToken ? "configurado" : "pendente"}</span>
+                                  {connection.accountId ? <span>ID principal: {connection.accountId}</span> : null}
+                                  {connection.pageId ? <span>Pagina vinculada: {connection.pageId}</span> : null}
+                                  <span>
+                                    Ultima sincronizacao: {connection.lastSync ? formatDate(connection.lastSync) : "ainda nao executada"}
+                                  </span>
+                                </div>
+                                <div className="mt-4">
+                                  <SecondaryButton label="Editar conexao" onClick={() => setEditingConnectionId(connection.id)} />
+                                </div>
                               </div>
-                              <div className="mt-3 grid gap-1 text-sm text-ink/60">
-                                <span>API key: {connection.apiKey ? "configurada" : "pendente"}</span>
-                                <span>Access token: {connection.accessToken ? "configurado" : "pendente"}</span>
-                                <span>
-                                  Ultima sincronizacao: {connection.lastSync ? formatDate(connection.lastSync) : "ainda nao executada"}
-                                </span>
-                              </div>
-                              <div className="mt-4">
-                                <SecondaryButton label="Editar conexao" onClick={() => setEditingConnectionId(connection.id)} />
-                              </div>
-                            </>
+                              <ConnectionGuide network={connection.network} />
+                            </div>
                           )}
                         </article>
                       ))}
@@ -844,19 +1015,20 @@ export function PulsePostApp() {
                   </Card>
 
                   <div className="grid gap-5">
-                    <Card title="Boas praticas de conexao" description="Checklist de UX para quando voce plugar as APIs reais.">
+                    <Card title="Boas praticas de conexao" description="Checklist de UX para plugar as APIs reais com menos erro operacional.">
                       <ul className="grid gap-3 text-sm leading-6 text-ink/60">
-                        <li>Defina uma conta por rede para reduzir erro operacional.</li>
-                        <li>Salve tokens com rotacao e data de ultima sincronizacao.</li>
-                        <li>Centralize callbacks e webhooks por ambiente.</li>
-                        <li>Mostre estado de autenticacao antes de liberar agendamentos.</li>
+                        <li>Use tokens de longa duracao ou refresh token quando a plataforma oferecer isso.</li>
+                        <li>Guarde IDs principais separados: conta profissional, pagina, canal ou open_id.</li>
+                        <li>Mostre claramente se a rede pede OAuth de usuario, token da pagina ou token do criador.</li>
+                        <li>Nao trate API key como credencial universal de publicacao, porque isso quebra especialmente em YouTube e Meta.</li>
                       </ul>
                     </Card>
 
-                    <Card title="Resumo tecnico" description="Base pronta para integrar publicacao, analytics e refresh de credenciais.">
+                    <Card title="Resumo tecnico" description="Verificacao da implementacao atual e proximo passo para conexao precisa.">
                       <div className="grid gap-3 text-sm text-ink/60">
-                        <p>Esta aba foi criada para concentrar os fluxos de conexao por API com Instagram, Facebook, YouTube Shorts e TikTok.</p>
-                        <p>Por enquanto os dados ficam salvos localmente, mas a estrutura do estado ja separa credenciais, conta conectada e ultimo sync.</p>
+                        <p>O problema principal encontrado era o uso de um formulario unico com API key, secret, token e webhook para todas as redes.</p>
+                        <p>Agora a tela passou a refletir melhor o que cada plataforma pede oficialmente para publicar e agendar, com instrucoes lado a lado para orientar a configuracao.</p>
+                        <p>Tambem corrigi a persistencia da sessao local para que voce nao seja enviada para o login em todo reload.</p>
                       </div>
                     </Card>
                   </div>
@@ -1106,6 +1278,38 @@ function StatusPill({ status }: { status: SocialConnection["status"] }) {
   );
 }
 
+function ConnectionGuide({ network }: { network: NetworkKey }) {
+  const guide = connectionGuides[network];
+
+  return (
+    <aside className="rounded-[1.25rem] border border-violet/10 bg-violet/5 p-4">
+      <div className="text-sm font-medium text-violet">Como configurar {networkLabels[network]}</div>
+      <p className="mt-2 text-sm leading-6 text-ink/60">{guide.summary}</p>
+      <div className="mt-4 rounded-2xl bg-white/90 px-4 py-3 text-sm leading-6 text-ink/65">
+        <strong className="block text-ink">O que estava errado antes</strong>
+        {guide.whyCurrentFieldsWereWrong}
+      </div>
+      <ol className="mt-4 grid gap-3 text-sm leading-6 text-ink/65">
+        {guide.steps.map((step) => (
+          <li key={step} className="flex gap-3">
+            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-violet text-[11px] text-white">
+              {guide.steps.indexOf(step) + 1}
+            </span>
+            <span>{step}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="mt-4 grid gap-2 text-sm">
+        {guide.officialLinks.map((link) => (
+          <a key={link.href} href={link.href} target="_blank" rel="noreferrer" className="text-violet underline decoration-violet/35 underline-offset-4">
+            {link.label}
+          </a>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
 function CheckGrid({ legend, children }: { legend: string; children: React.ReactNode }) {
   return (
     <fieldset className="grid gap-3">
@@ -1162,12 +1366,14 @@ function Field({
   placeholder,
   type = "text",
   defaultValue,
+  required = true,
 }: {
   label: string;
   name: string;
   placeholder?: string;
   type?: string;
   defaultValue?: string;
+  required?: boolean;
 }) {
   return (
     <label className="grid gap-2 text-sm font-medium">
@@ -1177,7 +1383,7 @@ function Field({
         type={type}
         defaultValue={defaultValue}
         placeholder={placeholder}
-        required
+        required={required}
         className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 outline-none transition focus:border-violet focus:bg-white"
       />
     </label>
