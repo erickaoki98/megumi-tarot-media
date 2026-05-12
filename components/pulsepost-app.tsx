@@ -21,6 +21,12 @@ type FiltersState = {
   mediaStatus: "all" | MediaStatus;
 };
 
+type DraftPreviewState = {
+  name: string;
+  type: MediaItem["type"];
+  url: string;
+};
+
 const defaultFilters: FiltersState = {
   mediaStatus: "all",
 };
@@ -192,6 +198,39 @@ function randomId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function inferMediaTypeFromFile(file: File): MediaItem["type"] {
+  return file.type.startsWith("image/") ? "image" : "video";
+}
+
+function buildMediaItem(params: {
+  id: string;
+  title: string;
+  type: MediaItem["type"];
+  format: string;
+  duration: string;
+  status: MediaStatus;
+  category: string;
+  fileName: string;
+}): MediaItem {
+  return {
+    id: params.id,
+    title: params.title,
+    type: params.type,
+    format: params.format,
+    duration: params.duration,
+    status: params.status,
+    category: params.category,
+    fileName: params.fileName,
+    createdAt: new Date().toISOString(),
+    stats: {
+      instagram: { views: 0, engagement: 0, score: 0 },
+      facebook: { views: 0, engagement: 0, score: 0 },
+      youtube: { views: 0, engagement: 0, score: 0 },
+      tiktok: { views: 0, engagement: 0, score: 0 },
+    },
+  };
+}
+
 export function PulsePostApp({
   secureConnectionSummaries,
 }: {
@@ -203,6 +242,11 @@ export function PulsePostApp({
   const [filters, setFilters] = useState<FiltersState>(defaultFilters);
   const [flash, setFlash] = useState<FlashState>(null);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [mediaFormPreview, setMediaFormPreview] = useState<DraftPreviewState | null>(null);
+  const [scheduleFormPreview, setScheduleFormPreview] = useState<DraftPreviewState | null>(null);
+  const [ephemeralMediaPreviews, setEphemeralMediaPreviews] = useState<Record<string, DraftPreviewState>>({});
+  const [mediaFormKey, setMediaFormKey] = useState(0);
+  const [scheduleFormKey, setScheduleFormKey] = useState(0);
 
   useEffect(() => {
     const nextState = loadState();
@@ -282,25 +326,38 @@ export function PulsePostApp({
   }
 
   function handleCreateMedia(formData: FormData) {
-    const nextItem: MediaItem = {
-      id: randomId("media"),
+    const upload = formData.get("uploadFile");
+    const uploadedFile = upload instanceof File && upload.size > 0 ? upload : null;
+    const inferredType = uploadedFile ? inferMediaTypeFromFile(uploadedFile) : null;
+    const nextItemId = randomId("media");
+    const fileName = uploadedFile?.name || String(formData.get("fileName") ?? "").trim();
+
+    if (!fileName) {
+      setFlash({ message: "Envie um arquivo ou informe o nome do arquivo.", kind: "error" });
+      return;
+    }
+
+    const nextItem = buildMediaItem({
+      id: nextItemId,
       title: String(formData.get("title") ?? "").trim(),
-      type: String(formData.get("type") ?? "video") as MediaItem["type"],
+      type: inferredType ?? (String(formData.get("type") ?? "video") as MediaItem["type"]),
       format: String(formData.get("format") ?? "").trim(),
-      duration: String(formData.get("duration") ?? "").trim(),
+      duration: String(formData.get("duration") ?? "").trim() || (inferredType === "image" ? "Imagem" : "00:00"),
       status: String(formData.get("status") ?? "active") as MediaStatus,
       category: String(formData.get("category") ?? "").trim(),
-      fileName: String(formData.get("fileName") ?? "").trim(),
-      createdAt: new Date().toISOString(),
-      stats: {
-        instagram: { views: 0, engagement: 0, score: 0 },
-        facebook: { views: 0, engagement: 0, score: 0 },
-        youtube: { views: 0, engagement: 0, score: 0 },
-        tiktok: { views: 0, engagement: 0, score: 0 },
-      },
-    };
+      fileName,
+    });
+
+    if (uploadedFile && mediaFormPreview) {
+      setEphemeralMediaPreviews((current) => ({
+        ...current,
+        [nextItemId]: mediaFormPreview,
+      }));
+    }
 
     persist({ ...data, mediaLibrary: [nextItem, ...data.mediaLibrary] }, "Midia adicionada na biblioteca.");
+    setMediaFormPreview(null);
+    setMediaFormKey((current) => current + 1);
   }
 
   function handleCreateSchedule(formData: FormData) {
@@ -311,10 +368,56 @@ export function PulsePostApp({
       return;
     }
 
+    let mediaId = String(formData.get("mediaId") ?? "") || null;
+    const upload = formData.get("scheduleUploadFile");
+    const uploadedFile = upload instanceof File && upload.size > 0 ? upload : null;
+    const manualMediaTitle = String(formData.get("manualMediaTitle") ?? "").trim();
+    const manualCategory = String(formData.get("manualCategory") ?? "").trim();
+    const manualFormat = String(formData.get("manualFormat") ?? "").trim();
+    const manualDuration = String(formData.get("manualDuration") ?? "").trim();
+    const manualStatus = String(formData.get("manualStatus") ?? "active") as MediaStatus;
+    const manualFileName = uploadedFile?.name || String(formData.get("manualFileName") ?? "").trim();
+    let nextMediaLibrary = data.mediaLibrary;
+
+    if (!mediaId && (uploadedFile || manualMediaTitle || manualFileName)) {
+      if (!manualMediaTitle) {
+        setFlash({ message: "Informe um titulo para a midia manual do agendamento.", kind: "error" });
+        return;
+      }
+
+      if (!manualFileName) {
+        setFlash({ message: "Envie o arquivo da nova midia ou informe o nome do arquivo.", kind: "error" });
+        return;
+      }
+
+      const nextItemId = randomId("media");
+      const inferredType = uploadedFile ? inferMediaTypeFromFile(uploadedFile) : (String(formData.get("manualMediaType") ?? "video") as MediaItem["type"]);
+      const nextMediaItem = buildMediaItem({
+        id: nextItemId,
+        title: manualMediaTitle,
+        type: inferredType,
+        format: manualFormat || "Post manual",
+        duration: manualDuration || (inferredType === "image" ? "Imagem" : "00:00"),
+        status: manualStatus,
+        category: manualCategory || "Agendamento manual",
+        fileName: manualFileName,
+      });
+
+      nextMediaLibrary = [nextMediaItem, ...data.mediaLibrary];
+      mediaId = nextItemId;
+
+      if (uploadedFile && scheduleFormPreview) {
+        setEphemeralMediaPreviews((current) => ({
+          ...current,
+          [nextItemId]: scheduleFormPreview,
+        }));
+      }
+    }
+
     const nextSchedule: ScheduleItem = {
       id: randomId("schedule"),
       title: String(formData.get("title") ?? "").trim(),
-      mediaId: String(formData.get("mediaId") ?? "") || null,
+      mediaId,
       networks,
       scheduledFor: String(formData.get("scheduledFor") ?? ""),
       caption: String(formData.get("caption") ?? "").trim(),
@@ -322,7 +425,9 @@ export function PulsePostApp({
       repostRuleId: String(formData.get("repostRuleId") ?? "") || null,
     };
 
-    persist({ ...data, schedules: [nextSchedule, ...data.schedules] }, "Agendamento criado.");
+    persist({ ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules] }, "Agendamento criado.");
+    setScheduleFormPreview(null);
+    setScheduleFormKey((current) => current + 1);
   }
 
   function handleCreateRule(formData: FormData) {
@@ -611,10 +716,33 @@ export function PulsePostApp({
               {activeView === "library" ? (
                 <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
                   <Card title="Nova midia" description="Adicione fotos e videos para uso em varias redes.">
-                    <FormGrid action={handleCreateMedia}>
+                    <FormGrid key={mediaFormKey} action={handleCreateMedia}>
                       <Field label="Titulo" name="title" placeholder="Ex: video da semana" />
+                      <label className="grid gap-2 text-sm font-medium">
+                        <span className="text-ink/75">Upload do arquivo</span>
+                        <input
+                          name="uploadFile"
+                          type="file"
+                          accept="video/*,image/*"
+                          className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 text-sm outline-none transition file:mr-4 file:rounded-full file:border-0 file:bg-violet file:px-4 file:py-2 file:text-white focus:border-violet focus:bg-white"
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            if (!file) {
+                              setMediaFormPreview(null);
+                              return;
+                            }
+
+                            setMediaFormPreview({
+                              name: file.name,
+                              type: inferMediaTypeFromFile(file),
+                              url: URL.createObjectURL(file),
+                            });
+                          }}
+                        />
+                      </label>
+                      <AssetPreview preview={mediaFormPreview} title="Preview da nova midia" />
                       <div className="grid gap-4 md:grid-cols-2">
-                        <Field label="Arquivo" name="fileName" placeholder="video.mp4" />
+                        <Field label="Arquivo (opcional se houver upload)" name="fileName" placeholder="video.mp4" required={false} />
                         <Field label="Categoria" name="category" placeholder="Campanha" />
                       </div>
                       <div className="grid gap-4 md:grid-cols-2">
@@ -674,8 +802,18 @@ export function PulsePostApp({
                     <div className="grid gap-3">
                       {filteredMedia.map((item) => {
                         const health = getMediaHealth(item);
+                        const preview = ephemeralMediaPreviews[item.id] ?? null;
                         return (
                           <article key={item.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                            {preview ? (
+                              <div className="mb-4 overflow-hidden rounded-[1rem] border border-violet/10 bg-violet/4">
+                                {preview.type === "video" ? (
+                                  <video controls className="max-h-72 w-full bg-black/80" src={preview.url} />
+                                ) : (
+                                  <img src={preview.url} alt={item.title} className="max-h-72 w-full object-cover" />
+                                )}
+                              </div>
+                            ) : null}
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <div>
                                 <h3 className="font-medium">{item.title}</h3>
@@ -718,7 +856,7 @@ export function PulsePostApp({
               {activeView === "scheduler" ? (
                 <section className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
                   <Card title="Novo agendamento" description="Programe uma postagem para varias redes ao mesmo tempo.">
-                    <FormGrid action={handleCreateSchedule}>
+                    <FormGrid key={scheduleFormKey} action={handleCreateSchedule}>
                       <Field label="Titulo interno" name="title" placeholder="Lote de domingo" />
                       <SelectField
                         label="Midia"
@@ -728,6 +866,67 @@ export function PulsePostApp({
                           ...data.mediaLibrary.map((item) => ({ label: item.title, value: item.id })),
                         ]}
                       />
+                      <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4">
+                        <div className="mb-4">
+                          <h4 className="font-medium text-ink">Adicionar nova midia neste agendamento</h4>
+                          <p className="mt-1 text-sm text-ink/55">
+                            Se voce nao selecionar uma midia existente, pode cadastrar uma nova aqui. Ao salvar, ela entra automaticamente na biblioteca.
+                          </p>
+                        </div>
+                        <div className="grid gap-4">
+                          <label className="grid gap-2 text-sm font-medium">
+                            <span className="text-ink/75">Upload do arquivo</span>
+                            <input
+                              name="scheduleUploadFile"
+                              type="file"
+                              accept="video/*,image/*"
+                              className="rounded-2xl border border-violet/12 bg-white px-4 py-3 text-sm outline-none transition file:mr-4 file:rounded-full file:border-0 file:bg-violet file:px-4 file:py-2 file:text-white focus:border-violet"
+                              onChange={(event) => {
+                                const file = event.currentTarget.files?.[0];
+                                if (!file) {
+                                  setScheduleFormPreview(null);
+                                  return;
+                                }
+
+                                setScheduleFormPreview({
+                                  name: file.name,
+                                  type: inferMediaTypeFromFile(file),
+                                  url: URL.createObjectURL(file),
+                                });
+                              }}
+                            />
+                          </label>
+                          <AssetPreview preview={scheduleFormPreview} title="Preview da nova midia do agendamento" />
+                          <Field label="Titulo da nova midia" name="manualMediaTitle" placeholder="Ex: video exclusivo do post" required={false} />
+                          <div className="grid gap-4 md:grid-cols-2">
+                            <Field label="Arquivo (opcional se houver upload)" name="manualFileName" placeholder="video-curto.mp4" required={false} />
+                            <Field label="Categoria" name="manualCategory" placeholder="Agendamento manual" required={false} />
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            <SelectField
+                              label="Tipo"
+                              name="manualMediaType"
+                              options={[
+                                { label: "Video", value: "video" },
+                                { label: "Imagem", value: "image" },
+                              ]}
+                            />
+                            <Field label="Formato" name="manualFormat" placeholder="Short / Reel / Feed" required={false} />
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            <Field label="Duracao" name="manualDuration" placeholder="00:30 ou Imagem" required={false} />
+                            <SelectField
+                              label="Status na biblioteca"
+                              name="manualStatus"
+                              options={[
+                                { label: "Ativa", value: "active" },
+                                { label: "Revisao", value: "review" },
+                                { label: "Arquivada", value: "archived" },
+                              ]}
+                            />
+                          </div>
+                        </div>
+                      </div>
                       <CheckGrid legend="Redes">
                         {(Object.keys(networkLabels) as NetworkKey[]).map((network) => (
                           <CheckCard key={network} name="networks" value={network} label={networkLabels[network]} />
@@ -1080,6 +1279,33 @@ function LogoMark({ compact = false }: { compact?: boolean }) {
       )}
     >
       <HeartPlayIcon className={compact ? "size-8 text-rose-600" : "size-9 text-rose-600"} />
+    </div>
+  );
+}
+
+function AssetPreview({
+  preview,
+  title,
+}: {
+  preview: DraftPreviewState | null;
+  title: string;
+}) {
+  if (!preview) {
+    return (
+      <div className="rounded-[1.25rem] border border-dashed border-violet/20 bg-violet/4 px-4 py-6 text-sm text-ink/50">
+        O preview do arquivo aparece aqui para voce conferir antes de salvar.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-3">
+      {preview.type === "video" ? (
+        <video controls className="w-full rounded-2xl bg-black/80" src={preview.url} />
+      ) : (
+        <img src={preview.url} alt={title} className="w-full rounded-2xl object-cover" />
+      )}
+      <p className="mt-3 text-sm text-ink/60">{preview.name}</p>
     </div>
   );
 }
