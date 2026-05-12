@@ -59,16 +59,11 @@ export type SocialConnection = {
   network: NetworkKey;
   status: "connected" | "pending" | "disconnected";
   accountName: string;
-  clientId: string;
-  clientSecret: string;
-  accessToken: string;
-  refreshToken: string;
   accountId: string;
   pageId: string;
   redirectUri: string;
   scopes: string;
   webhookUrl: string;
-  tokenExpiresAt: string;
   lastSync: string | null;
 };
 

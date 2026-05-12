@@ -32,7 +32,7 @@ const defaultFilters: FiltersState = {
 };
 
 type ConnectionGuideField = {
-  name: "clientId" | "clientSecret" | "accessToken" | "refreshToken" | "accountId" | "pageId" | "redirectUri" | "scopes" | "webhookUrl" | "tokenExpiresAt";
+  name: "accountId" | "pageId" | "redirectUri" | "scopes" | "webhookUrl";
   label: string;
   placeholder: string;
   required?: boolean;
@@ -63,14 +63,11 @@ const connectionGuides: Record<
       "Cadastre a Redirect URI do seu fluxo OAuth e salve as permissoes utilizadas.",
     ],
     fields: [
-      { name: "clientId", label: "Meta App ID", placeholder: "App ID da Meta", required: true },
-      { name: "clientSecret", label: "Meta App Secret", placeholder: "App Secret da Meta", required: true },
-      { name: "accessToken", label: "Long-Lived User Access Token", placeholder: "Token de usuario de longa duracao", required: true },
       { name: "accountId", label: "Instagram Professional Account ID", placeholder: "1784..." , required: true},
       { name: "pageId", label: "Facebook Page ID vinculada", placeholder: "ID da pagina vinculada", required: true },
-      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/meta/callback" },
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/api/oauth/instagram/callback" },
       { name: "scopes", label: "Permissoes (scopes)", placeholder: "instagram_business_basic, instagram_business_content_publish, pages_show_list" },
-      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
+      { name: "webhookUrl", label: "Webhook URL", placeholder: "https://seu-dominio.com/api/webhooks/meta" },
     ],
   },
   facebook: {
@@ -88,13 +85,10 @@ const connectionGuides: Record<
       "Use as permissoes de Pages necessarias para leitura e publicacao.",
     ],
     fields: [
-      { name: "clientId", label: "Meta App ID", placeholder: "App ID da Meta", required: true },
-      { name: "clientSecret", label: "Meta App Secret", placeholder: "App Secret da Meta", required: true },
-      { name: "accessToken", label: "Page Access Token", placeholder: "Token da Pagina", required: true },
       { name: "pageId", label: "Facebook Page ID", placeholder: "ID da pagina", required: true },
-      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/facebook/callback" },
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/api/oauth/facebook/callback" },
       { name: "scopes", label: "Permissoes (scopes)", placeholder: "pages_manage_posts, pages_show_list, pages_read_engagement" },
-      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
+      { name: "webhookUrl", label: "Webhook URL", placeholder: "https://seu-dominio.com/api/webhooks/meta" },
     ],
   },
   youtube: {
@@ -112,14 +106,9 @@ const connectionGuides: Record<
       "Salve o Client ID, Client Secret, Refresh Token e o Channel ID abaixo.",
     ],
     fields: [
-      { name: "clientId", label: "OAuth Client ID", placeholder: "Client ID do Google", required: true },
-      { name: "clientSecret", label: "OAuth Client Secret", placeholder: "Client Secret do Google", required: true },
-      { name: "refreshToken", label: "Refresh Token", placeholder: "Refresh token OAuth", required: true },
       { name: "accountId", label: "YouTube Channel ID", placeholder: "UC..." , required: true},
-      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/youtube/callback", required: true },
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/api/oauth/youtube/callback", required: true },
       { name: "scopes", label: "Permissoes (scopes)", placeholder: "https://www.googleapis.com/auth/youtube.upload", required: true },
-      { name: "accessToken", label: "Access Token atual", placeholder: "Token atual, se quiser armazenar localmente" },
-      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
     ],
   },
   tiktok: {
@@ -137,15 +126,10 @@ const connectionGuides: Record<
       "Salve tambem os scopes aprovados para publicacao e upload.",
     ],
     fields: [
-      { name: "clientId", label: "Client Key", placeholder: "Client Key do TikTok", required: true },
-      { name: "clientSecret", label: "Client Secret", placeholder: "Client Secret do TikTok", required: true },
-      { name: "accessToken", label: "Access Token", placeholder: "Access token do criador", required: true },
-      { name: "refreshToken", label: "Refresh Token", placeholder: "Refresh token do criador", required: true },
       { name: "accountId", label: "Open ID", placeholder: "open_id retornado pelo OAuth", required: true },
-      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/oauth/tiktok/callback", required: true },
+      { name: "redirectUri", label: "Redirect URI", placeholder: "https://seu-dominio.com/api/oauth/tiktok/callback", required: true },
       { name: "webhookUrl", label: "Verified Domain / URL Prefix", placeholder: "https://media.megumitarot.com.br" },
       { name: "scopes", label: "Permissoes (scopes)", placeholder: "video.publish, video.upload", required: true },
-      { name: "tokenExpiresAt", label: "Expira em", placeholder: "2026-06-30T12:00" },
     ],
   },
 };
@@ -242,6 +226,7 @@ export function PulsePostApp({
   const [filters, setFilters] = useState<FiltersState>(defaultFilters);
   const [flash, setFlash] = useState<FlashState>(null);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editingPublicConnectionId, setEditingPublicConnectionId] = useState<string | null>(null);
   const [mediaFormPreview, setMediaFormPreview] = useState<DraftPreviewState | null>(null);
   const [scheduleFormPreview, setScheduleFormPreview] = useState<DraftPreviewState | null>(null);
   const [ephemeralMediaPreviews, setEphemeralMediaPreviews] = useState<Record<string, DraftPreviewState>>({});
@@ -500,6 +485,25 @@ export function PulsePostApp({
 
     persist({ ...data, users: nextUsers }, "Usuario atualizado.");
     setEditingUserId(null);
+  }
+
+  function handleUpdatePublicConnection(connectionId: string, formData: FormData) {
+    const nextConnections = data.connections.map((connection) =>
+      connection.id === connectionId
+        ? {
+            ...connection,
+            accountName: String(formData.get("accountName") ?? "").trim(),
+            accountId: String(formData.get("accountId") ?? "").trim(),
+            pageId: String(formData.get("pageId") ?? "").trim(),
+            redirectUri: String(formData.get("redirectUri") ?? "").trim(),
+            scopes: String(formData.get("scopes") ?? "").trim(),
+            webhookUrl: String(formData.get("webhookUrl") ?? "").trim(),
+          }
+        : connection,
+    );
+
+    persist({ ...data, connections: nextConnections }, "Campos publicos da conexao atualizados.");
+    setEditingPublicConnectionId(null);
   }
 
   function deleteUser(userId: string) {
@@ -1115,7 +1119,15 @@ export function PulsePostApp({
                       Segredos de API nao devem mais ser preenchidos nem persistidos no navegador. Configure as variaveis em ambiente seguro no servidor ou na Vercel e use este painel apenas para conferir se cada rede esta pronta.
                     </div>
                     <div className="grid gap-3">
-                      {secureConnectionSummaries.map((connectionSummary) => (
+                      {secureConnectionSummaries.map((connectionSummary) => {
+                        const publicConnection = data.connections.find((connection) => connection.network === connectionSummary.network);
+                        if (!publicConnection) {
+                          return null;
+                        }
+
+                        const isEditingPublic = editingPublicConnectionId === publicConnection.id;
+
+                        return (
                         <article key={connectionSummary.network} className="rounded-[1.25rem] border border-violet/10 p-4">
                           <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
                             <div>
@@ -1130,6 +1142,66 @@ export function PulsePostApp({
                                 </div>
                                 <StatusPill status={connectionSummary.ready ? "connected" : "pending"} />
                               </div>
+
+                              {isEditingPublic ? (
+                                <form
+                                  className="mt-4 grid gap-4"
+                                  action={(formData) => {
+                                    handleUpdatePublicConnection(publicConnection.id, formData);
+                                  }}
+                                >
+                                  <Field label="Nome da conta" name="accountName" defaultValue={publicConnection.accountName} placeholder="@megumitarot" required={false} />
+                                  {connectionGuides[connectionSummary.network].fields.map((field) => (
+                                    <Field
+                                      key={`${publicConnection.id}-${field.name}`}
+                                      label={field.label}
+                                      name={field.name}
+                                      defaultValue={publicConnection[field.name]}
+                                      placeholder={field.placeholder}
+                                      required={field.required ?? false}
+                                    />
+                                  ))}
+                                  <div className="flex flex-wrap gap-3">
+                                    <PrimaryButton label="Salvar dados publicos" />
+                                    <SecondaryButton label="Cancelar" type="button" onClick={() => setEditingPublicConnectionId(null)} />
+                                  </div>
+                                </form>
+                              ) : (
+                                <>
+                                  <div className="mt-4 grid gap-3 rounded-[1.15rem] border border-violet/10 bg-violet/4 p-4 text-sm text-ink/65">
+                                    <div><strong className="text-ink">Conta:</strong> {publicConnection.accountName || "nao informada"}</div>
+                                    <div><strong className="text-ink">ID principal:</strong> {publicConnection.accountId || "nao informado"}</div>
+                                    {publicConnection.pageId ? <div><strong className="text-ink">Page ID:</strong> {publicConnection.pageId}</div> : null}
+                                    <div><strong className="text-ink">Redirect URI:</strong> {publicConnection.redirectUri || "nao informada"}</div>
+                                    <div><strong className="text-ink">Scopes:</strong> {publicConnection.scopes || "nao informados"}</div>
+                                    {publicConnection.webhookUrl ? <div><strong className="text-ink">Webhook / URL:</strong> {publicConnection.webhookUrl}</div> : null}
+                                  </div>
+
+                                  <div className="mt-4 flex flex-wrap gap-3">
+                                    <SecondaryButton label="Editar dados publicos" onClick={() => setEditingPublicConnectionId(publicConnection.id)} />
+                                    <SecondaryButton
+                                      label={connectionSummary.ready ? "Reconectar" : "Conectar"}
+                                      onClick={() => {
+                                        setFlash({
+                                          message: `Fluxo OAuth de ${networkLabels[connectionSummary.network]} sera a proxima etapa do backend. Os segredos continuam protegidos fora do painel.`,
+                                          kind: "success",
+                                        });
+                                      }}
+                                    />
+                                    <SecondaryButton
+                                      label="Verificar status"
+                                      onClick={() => {
+                                        setFlash({
+                                          message: connectionSummary.ready
+                                            ? `${networkLabels[connectionSummary.network]} possui os segredos obrigatorios no servidor.`
+                                            : `${networkLabels[connectionSummary.network]} ainda precisa de variaveis no ambiente seguro.`,
+                                          kind: connectionSummary.ready ? "success" : "error",
+                                        });
+                                      }}
+                                    />
+                                  </div>
+                                </>
+                              )}
 
                               <div className="mt-4 grid gap-3">
                                 {connectionSummary.fields.map((field) => (
@@ -1164,7 +1236,8 @@ export function PulsePostApp({
                             <ConnectionGuide network={connectionSummary.network} />
                           </div>
                         </article>
-                      ))}
+                      );
+                      })}
                     </div>
                   </Card>
 
