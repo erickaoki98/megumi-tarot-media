@@ -27,6 +27,26 @@ type DraftPreviewState = {
   url: string;
 };
 
+type BundleClientStatus = {
+  configured: boolean;
+  hasApiKey: boolean;
+  hasTeamId: boolean;
+  accounts: Record<NetworkKey, { connected: boolean; username: string | null }>;
+  error: string | null;
+  r2Configured: boolean;
+};
+
+async function uploadFileToR2(file: File): Promise<{ url: string; type: MediaItem["type"] } | null> {
+  const form = new FormData();
+  form.set("file", file);
+  const response = await fetch("/api/media/upload", { method: "POST", body: form });
+  const result = await response.json();
+  if (response.ok && result.ok) {
+    return { url: result.url as string, type: result.type as MediaItem["type"] };
+  }
+  throw new Error(result.error ?? "Falha ao enviar arquivo para o R2.");
+}
+
 const defaultFilters: FiltersState = {
   mediaStatus: "all",
 };
@@ -195,6 +215,7 @@ function buildMediaItem(params: {
   status: MediaStatus;
   category: string;
   fileName: string;
+  url?: string | null;
 }): MediaItem {
   return {
     id: params.id,
@@ -205,6 +226,7 @@ function buildMediaItem(params: {
     status: params.status,
     category: params.category,
     fileName: params.fileName,
+    url: params.url ?? null,
     createdAt: new Date().toISOString(),
     stats: {
       instagram: { views: 0, engagement: 0, score: 0 },
@@ -232,6 +254,27 @@ export function PulsePostApp({
   const [ephemeralMediaPreviews, setEphemeralMediaPreviews] = useState<Record<string, DraftPreviewState>>({});
   const [mediaFormKey, setMediaFormKey] = useState(0);
   const [scheduleFormKey, setScheduleFormKey] = useState(0);
+  const [bundleStatus, setBundleStatus] = useState<BundleClientStatus | null>(null);
+  const [publishingSchedule, setPublishingSchedule] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/social/status")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((status: BundleClientStatus | null) => {
+        if (!cancelled) {
+          setBundleStatus(status);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBundleStatus(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const nextState = loadState();
@@ -310,7 +353,7 @@ export function PulsePostApp({
     setFlash({ message: `Sessao iniciada para ${user.name}.`, kind: "success" });
   }
 
-  function handleCreateMedia(formData: FormData) {
+  async function handleCreateMedia(formData: FormData) {
     const upload = formData.get("uploadFile");
     const uploadedFile = upload instanceof File && upload.size > 0 ? upload : null;
     const inferredType = uploadedFile ? inferMediaTypeFromFile(uploadedFile) : null;
@@ -322,6 +365,19 @@ export function PulsePostApp({
       return;
     }
 
+    let storedUrl: string | null = null;
+    if (uploadedFile) {
+      try {
+        const stored = await uploadFileToR2(uploadedFile);
+        storedUrl = stored?.url ?? null;
+      } catch (error) {
+        setFlash({
+          message: `Midia salva localmente, mas o upload para o R2 falhou: ${error instanceof Error ? error.message : "erro"}`,
+          kind: "error",
+        });
+      }
+    }
+
     const nextItem = buildMediaItem({
       id: nextItemId,
       title: String(formData.get("title") ?? "").trim(),
@@ -331,6 +387,7 @@ export function PulsePostApp({
       status: String(formData.get("status") ?? "active") as MediaStatus,
       category: String(formData.get("category") ?? "").trim(),
       fileName,
+      url: storedUrl,
     });
 
     if (uploadedFile && mediaFormPreview) {
@@ -340,12 +397,15 @@ export function PulsePostApp({
       }));
     }
 
-    persist({ ...data, mediaLibrary: [nextItem, ...data.mediaLibrary] }, "Midia adicionada na biblioteca.");
+    persist(
+      { ...data, mediaLibrary: [nextItem, ...data.mediaLibrary] },
+      storedUrl ? "Midia enviada para o R2 e adicionada na biblioteca." : "Midia adicionada na biblioteca.",
+    );
     setMediaFormPreview(null);
     setMediaFormKey((current) => current + 1);
   }
 
-  function handleCreateSchedule(formData: FormData) {
+  async function handleCreateSchedule(formData: FormData) {
     const networks = formData.getAll("networks").map((item) => String(item) as NetworkKey);
 
     if (!networks.length) {
@@ -354,6 +414,9 @@ export function PulsePostApp({
     }
 
     let mediaId = String(formData.get("mediaId") ?? "") || null;
+    let resolvedMediaUrl: string | null = mediaId
+      ? data.mediaLibrary.find((item) => item.id === mediaId)?.url ?? null
+      : null;
     const upload = formData.get("scheduleUploadFile");
     const uploadedFile = upload instanceof File && upload.size > 0 ? upload : null;
     const manualMediaTitle = String(formData.get("manualMediaTitle") ?? "").trim();
@@ -377,6 +440,19 @@ export function PulsePostApp({
 
       const nextItemId = randomId("media");
       const inferredType = uploadedFile ? inferMediaTypeFromFile(uploadedFile) : (String(formData.get("manualMediaType") ?? "video") as MediaItem["type"]);
+
+      if (uploadedFile) {
+        try {
+          const stored = await uploadFileToR2(uploadedFile);
+          resolvedMediaUrl = stored?.url ?? null;
+        } catch (error) {
+          setFlash({
+            message: `Upload para o R2 falhou: ${error instanceof Error ? error.message : "erro"}`,
+            kind: "error",
+          });
+        }
+      }
+
       const nextMediaItem = buildMediaItem({
         id: nextItemId,
         title: manualMediaTitle,
@@ -386,6 +462,7 @@ export function PulsePostApp({
         status: manualStatus,
         category: manualCategory || "Agendamento manual",
         fileName: manualFileName,
+        url: resolvedMediaUrl,
       });
 
       nextMediaLibrary = [nextMediaItem, ...data.mediaLibrary];
@@ -399,20 +476,131 @@ export function PulsePostApp({
       }
     }
 
+    const scheduledFor = String(formData.get("scheduledFor") ?? "");
+    const caption = String(formData.get("caption") ?? "").trim();
+    const title = String(formData.get("title") ?? "").trim();
+    const bundleMode = String(formData.get("bundleMode") ?? "off");
+
     const nextSchedule: ScheduleItem = {
       id: randomId("schedule"),
-      title: String(formData.get("title") ?? "").trim(),
+      title,
       mediaId,
       networks,
-      scheduledFor: String(formData.get("scheduledFor") ?? ""),
-      caption: String(formData.get("caption") ?? "").trim(),
+      scheduledFor,
+      caption,
       status: "scheduled",
       repostRuleId: String(formData.get("repostRuleId") ?? "") || null,
+      bundlePostId: null,
+      bundleStatus: null,
     };
 
-    persist({ ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules] }, "Agendamento criado.");
+    const baseState = { ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules] };
+    persist(baseState, "Agendamento criado.");
     setScheduleFormPreview(null);
+
+    if (bundleMode !== "off") {
+      if (!resolvedMediaUrl && !uploadedFile) {
+        setFlash({ message: "Anexe um arquivo ou use uma midia ja enviada ao R2 para publicar.", kind: "error" });
+      } else {
+        setPublishingSchedule(true);
+        const publishForm = new FormData();
+        publishForm.set("title", title || "Post");
+        publishForm.set("caption", caption);
+        publishForm.set("scheduledFor", scheduledFor);
+        publishForm.set("mode", bundleMode);
+        if (resolvedMediaUrl) {
+          publishForm.set("mediaUrl", resolvedMediaUrl);
+        } else if (uploadedFile) {
+          publishForm.set("file", uploadedFile);
+        }
+        networks.forEach((network) => publishForm.append("networks", network));
+
+        try {
+          const response = await fetch("/api/social/publish", { method: "POST", body: publishForm });
+          const result = await response.json();
+          if (response.ok && result.ok) {
+            updateScheduleBundleResult(baseState, nextSchedule.id, {
+              bundlePostId: result.postId ?? null,
+              bundleStatus: result.status === "DRAFT" ? "DRAFT" : "SCHEDULED",
+            });
+            setFlash({
+              message: result.status === "DRAFT" ? "Rascunho criado no bundle.social." : "Post enviado e agendado no bundle.social.",
+              kind: "success",
+            });
+          } else {
+            updateScheduleBundleResult(baseState, nextSchedule.id, { bundlePostId: null, bundleStatus: "error" });
+            setFlash({ message: `Falha no bundle.social: ${result.error ?? "erro desconhecido"}`, kind: "error" });
+          }
+        } catch {
+          updateScheduleBundleResult(baseState, nextSchedule.id, { bundlePostId: null, bundleStatus: "error" });
+          setFlash({ message: "Nao foi possivel contatar a API do bundle.social.", kind: "error" });
+        } finally {
+          setPublishingSchedule(false);
+        }
+      }
+    }
+
     setScheduleFormKey((current) => current + 1);
+  }
+
+  async function publishExistingSchedule(schedule: ScheduleItem, mode: "scheduled" | "draft" = "scheduled") {
+    const media = schedule.mediaId ? data.mediaLibrary.find((item) => item.id === schedule.mediaId) : null;
+    if (!media?.url) {
+      setFlash({ message: "Esta midia nao possui arquivo no R2. Reenvie o arquivo para publicar.", kind: "error" });
+      return;
+    }
+
+    setPublishingSchedule(true);
+    const publishForm = new FormData();
+    publishForm.set("title", schedule.title || "Post");
+    publishForm.set("caption", schedule.caption);
+    publishForm.set("scheduledFor", schedule.scheduledFor);
+    publishForm.set("mode", mode);
+    publishForm.set("mediaUrl", media.url);
+    publishForm.set("mediaType", media.type);
+    schedule.networks.forEach((network) => publishForm.append("networks", network));
+
+    try {
+      const response = await fetch("/api/social/publish", { method: "POST", body: publishForm });
+      const result = await response.json();
+      const nextState = {
+        ...data,
+        schedules: data.schedules.map((item) =>
+          item.id === schedule.id
+            ? {
+                ...item,
+                bundlePostId: response.ok && result.ok ? result.postId ?? null : null,
+                bundleStatus: (response.ok && result.ok ? (result.status === "DRAFT" ? "DRAFT" : "SCHEDULED") : "error") as ScheduleItem["bundleStatus"],
+              }
+            : item,
+        ),
+      };
+      persist(
+        nextState,
+        response.ok && result.ok
+          ? "Agendamento publicado no bundle.social."
+          : `Falha no bundle.social: ${result.error ?? "erro desconhecido"}`,
+        response.ok && result.ok ? "success" : "error",
+      );
+    } catch {
+      setFlash({ message: "Nao foi possivel contatar a API do bundle.social.", kind: "error" });
+    } finally {
+      setPublishingSchedule(false);
+    }
+  }
+
+  function updateScheduleBundleResult(
+    fromState: PersistedState,
+    scheduleId: string,
+    patch: Pick<ScheduleItem, "bundlePostId" | "bundleStatus">,
+  ) {
+    const nextState = {
+      ...fromState,
+      schedules: fromState.schedules.map((schedule) =>
+        schedule.id === scheduleId ? { ...schedule, ...patch } : schedule,
+      ),
+    };
+    persist(nextState);
   }
 
   function handleCreateRule(formData: FormData) {
@@ -574,6 +762,13 @@ export function PulsePostApp({
 
   function getLinkedMediaTitle(mediaId: string | null) {
     return data.mediaLibrary.find((item) => item.id === mediaId)?.title ?? "Midia nao vinculada";
+  }
+
+  function scheduleHasStoredMedia(schedule: ScheduleItem) {
+    if (!schedule.mediaId) {
+      return false;
+    }
+    return Boolean(data.mediaLibrary.find((item) => item.id === schedule.mediaId)?.url);
   }
 
   if (!currentUser) {
@@ -948,7 +1143,25 @@ export function PulsePostApp({
                         />
                       </div>
                       <Field label="Legenda base" name="caption" placeholder="Legenda adaptavel por rede" />
-                      <PrimaryButton label="Salvar agendamento" />
+                      <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4">
+                        <SelectField
+                          label="Publicacao via bundle.social"
+                          name="bundleMode"
+                          options={[
+                            { label: "Somente local (nao enviar)", value: "off" },
+                            { label: "Agendar no bundle.social", value: "scheduled" },
+                            { label: "Salvar como rascunho", value: "draft" },
+                          ]}
+                        />
+                        <p className="mt-2 text-xs text-ink/55">
+                          {bundleStatus?.configured
+                            ? bundleStatus.r2Configured
+                              ? "O arquivo anexado e enviado ao Cloudflare R2 e publicado via bundle.social. Voce tambem pode publicar agendamentos existentes pela fila ao lado."
+                              : "Anexe o arquivo de midia acima. (R2 nao configurado: o arquivo sera enviado direto, sem armazenamento permanente.)"
+                            : "Integracao bundle.social nao configurada. Defina BUNDLE_SOCIAL_API_KEY e BUNDLE_SOCIAL_TEAM_ID no servidor."}
+                        </p>
+                      </div>
+                      <PrimaryButton label={publishingSchedule ? "Enviando..." : "Salvar agendamento"} />
                     </FormGrid>
                   </Card>
 
@@ -967,6 +1180,30 @@ export function PulsePostApp({
                             </div>
                             <p className="mt-3 text-sm text-ink/60">Midia: {getLinkedMediaTitle(schedule.mediaId)}</p>
                             <p className="mt-1 text-sm text-ink/60">{schedule.caption}</p>
+                            <div className="mt-3 flex flex-wrap items-center gap-3">
+                              {schedule.bundleStatus ? (
+                                <span
+                                  className={classNames(
+                                    "inline-flex rounded-full px-3 py-1 text-xs",
+                                    schedule.bundleStatus === "error"
+                                      ? "bg-rose-100 text-rose-700"
+                                      : "bg-emerald-100 text-emerald-700",
+                                  )}
+                                >
+                                  {schedule.bundleStatus === "error"
+                                    ? "Falha no bundle.social"
+                                    : schedule.bundleStatus === "DRAFT"
+                                      ? "Rascunho no bundle.social"
+                                      : "Agendado no bundle.social"}
+                                </span>
+                              ) : null}
+                              {scheduleHasStoredMedia(schedule) && bundleStatus?.configured ? (
+                                <SecondaryButton
+                                  label={publishingSchedule ? "Enviando..." : "Publicar no bundle.social"}
+                                  onClick={() => publishExistingSchedule(schedule)}
+                                />
+                              ) : null}
+                            </div>
                           </article>
                         ))}
                     </div>
@@ -1114,7 +1351,58 @@ export function PulsePostApp({
 
               {activeView === "config" ? (
                 <section className="grid gap-5">
-                  <Card title="Conexoes por API" description="Agora os segredos ficam apenas no servidor. A interface mostra status mascarado, nomes das variaveis de ambiente e o passo a passo de configuracao.">
+                  <Card title="Publicacao via bundle.social" description="Integracao real de publicacao. O bundle.social cuida do OAuth e da entrega para cada rede; aqui basta uma API key e o team.">
+                    <div
+                      className={classNames(
+                        "mb-5 rounded-[1.25rem] border px-4 py-4 text-sm leading-6",
+                        bundleStatus?.configured
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                          : "border-amber-200 bg-amber-50 text-amber-900",
+                      )}
+                    >
+                      {bundleStatus === null
+                        ? "Verificando configuracao do bundle.social..."
+                        : bundleStatus.configured
+                          ? bundleStatus.error
+                            ? `Chave configurada, mas houve erro ao consultar contas: ${bundleStatus.error}`
+                            : "API key e team configurados. As contas conectadas aparecem abaixo."
+                          : "Defina BUNDLE_SOCIAL_API_KEY e BUNDLE_SOCIAL_TEAM_ID no ambiente do servidor (Vercel) e faca um novo deploy."}
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {(Object.keys(networkLabels) as NetworkKey[]).map((network) => {
+                        const account = bundleStatus?.accounts?.[network];
+                        const connected = Boolean(account?.connected);
+                        return (
+                          <div key={network} className="flex items-center justify-between rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+                            <div>
+                              <div className="text-sm font-medium text-ink">{networkLabels[network]}</div>
+                              <div className="mt-1 text-xs text-ink/55">{account?.username ? `@${account.username}` : "conta nao conectada"}</div>
+                            </div>
+                            <StatusPill status={connected ? "connected" : "pending"} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-4 grid gap-2 text-sm text-ink/60">
+                      <div className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+                        <span className="font-mono text-xs text-violet">BUNDLE_SOCIAL_API_KEY</span>
+                        <span className="ml-2 text-xs">{bundleStatus?.hasApiKey ? "configurada" : "pendente"}</span>
+                      </div>
+                      <div className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+                        <span className="font-mono text-xs text-violet">BUNDLE_SOCIAL_TEAM_ID</span>
+                        <span className="ml-2 text-xs">{bundleStatus?.hasTeamId ? "configurado" : "pendente"}</span>
+                      </div>
+                      <div className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+                        <span className="font-mono text-xs text-violet">Cloudflare R2 (R2_*)</span>
+                        <span className="ml-2 text-xs">{bundleStatus?.r2Configured ? "configurado" : "pendente"}</span>
+                      </div>
+                      <p className="text-xs text-ink/50">
+                        Conecte as contas em app.bundle.social (ou via portal link) e configure as variaveis acima. As midias enviadas vao para o Cloudflare R2, e a publicacao acontece na aba Agendamentos.
+                      </p>
+                    </div>
+                  </Card>
+
+                  <Card title="Conexoes por API (legado / manual)" description="Configuracao manual por rede. Mantida apenas como referencia; a publicacao real usa o bundle.social acima.">
                     <div className="mb-5 rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
                       Segredos de API nao devem mais ser preenchidos nem persistidos no navegador. Configure as variaveis em ambiente seguro no servidor ou na Vercel e use este painel apenas para conferir se cada rede esta pronta.
                     </div>

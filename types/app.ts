@@ -19,6 +19,7 @@ export type MediaItem = {
   status: MediaStatus;
   category: string;
   fileName: string;
+  url?: string | null;
   createdAt: string;
   stats: Record<NetworkKey, NetworkStat>;
 };
@@ -32,6 +33,8 @@ export type ScheduleItem = {
   caption: string;
   status: "scheduled";
   repostRuleId: string | null;
+  bundlePostId?: string | null;
+  bundleStatus?: "SCHEDULED" | "DRAFT" | "error" | null;
 };
 
 export type RepostRule = {
