@@ -105,19 +105,24 @@ type BuildDataParams = {
   caption: string;
   uploadIds: string[];
   isImage: boolean;
+  /** "Story" | "Reel" — determines INSTAGRAM/FACEBOOK post type for videos. */
+  format?: string;
 };
 
-function buildPlatformData(networks: NetworkKey[], { caption, uploadIds, isImage }: BuildDataParams) {
+function buildPlatformData(networks: NetworkKey[], { caption, uploadIds, isImage, format }: BuildDataParams) {
   const data: Record<string, unknown> = {};
+
+  const isStory = format?.toLowerCase() === "story";
+  const videoType = isStory ? "STORY" : "REEL";
 
   for (const network of networks) {
     const type = networkToBundleType[network];
     switch (type) {
       case "INSTAGRAM":
-        data.INSTAGRAM = { type: isImage ? "POST" : "REEL", text: caption, uploadIds };
+        data.INSTAGRAM = { type: isImage ? "POST" : videoType, text: caption, uploadIds };
         break;
       case "FACEBOOK":
-        data.FACEBOOK = { type: isImage ? "POST" : "REEL", text: caption, uploadIds };
+        data.FACEBOOK = { type: isImage ? "POST" : videoType, text: caption, uploadIds };
         break;
       case "YOUTUBE":
         data.YOUTUBE = { type: "SHORT", text: caption, description: caption, uploadIds, privacy: "PUBLIC" };
@@ -139,6 +144,8 @@ export type CreatePostParams = {
   uploadIds: string[];
   isImage: boolean;
   schedule: boolean;
+  /** "Story" | "Reel" — determines INSTAGRAM/FACEBOOK post type for videos. */
+  format?: string;
 };
 
 export type BundlePost = { id: string; status?: string; postDate?: string };
@@ -161,6 +168,7 @@ export async function createPost(params: CreatePostParams): Promise<BundlePost> 
       caption: params.caption,
       uploadIds: params.uploadIds,
       isImage: params.isImage,
+      format: params.format,
     }),
   };
 

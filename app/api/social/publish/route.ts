@@ -37,6 +37,7 @@ export async function POST(request: Request) {
   const schedule = String(form.get("mode") ?? "scheduled") !== "draft";
   const mediaUrl = String(form.get("mediaUrl") ?? "").trim();
   const mediaType = String(form.get("mediaType") ?? "").trim();
+  const mediaFormat = String(form.get("mediaFormat") ?? "").trim();
 
   const fileEntry = form.get("file");
   const file = fileEntry instanceof File && fileEntry.size > 0 ? fileEntry : null;
@@ -65,6 +66,7 @@ export async function POST(request: Request) {
       uploadIds: [upload.id],
       isImage,
       schedule,
+      format: mediaFormat || undefined,
     });
 
     return NextResponse.json({ ok: true, postId: post.id, status: post.status ?? (schedule ? "SCHEDULED" : "DRAFT") });

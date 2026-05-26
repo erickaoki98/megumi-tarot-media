@@ -156,6 +156,7 @@ function prefillMediaFormFromFile(file: File, form: HTMLFormElement | null) {
 
   if (type === "image") {
     setFormFieldValue(form, "duration", "Imagem");
+    setFormFieldValue(form, "format", "Feed");
     return;
   }
 
@@ -612,6 +613,10 @@ export function PulsePostApp() {
           publishForm.set("file", uploadedFile);
         }
         networks.forEach((network) => publishForm.append("networks", network));
+        const resolvedFormat = mediaId
+          ? data.mediaLibrary.find((item) => item.id === mediaId)?.format ?? manualFormat
+          : manualFormat;
+        if (resolvedFormat) publishForm.set("mediaFormat", resolvedFormat);
 
         try {
           const response = await fetch("/api/social/publish", { method: "POST", body: publishForm });
@@ -656,6 +661,7 @@ export function PulsePostApp() {
     publishForm.set("mode", mode);
     publishForm.set("mediaUrl", media.url);
     publishForm.set("mediaType", media.type);
+    if (media.format) publishForm.set("mediaFormat", media.format);
     schedule.networks.forEach((network) => publishForm.append("networks", network));
 
     try {
