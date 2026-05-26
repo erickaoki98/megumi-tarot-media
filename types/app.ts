@@ -22,6 +22,10 @@ export type MediaItem = {
   url?: string | null;
   createdAt: string;
   stats: Record<NetworkKey, NetworkStat>;
+  /** Quantas vezes esta midia ja foi reaproveitada (repostada). */
+  repostCount?: number;
+  /** ISO da ultima vez que entrou no ar (novo post ou repost). */
+  lastPostedAt?: string | null;
 };
 
 export type ScheduleItem = {
@@ -77,4 +81,4 @@ export type FlashState = {
   kind: "success" | "error";
 } | null;
 
-export type ViewKey = "library" | "scheduler" | "reposts" | "users" | "config";
+export type ViewKey = "library" | "scheduler" | "plan" | "reposts" | "users" | "config";

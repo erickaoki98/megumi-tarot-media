@@ -84,6 +84,34 @@ The bucket must be publicly readable (or served through a public custom domain) 
 bundle.social can fetch the media. Use the `Publicar no bundle.social` button on any
 queued schedule whose media has an R2 URL.
 
+## Plano do dia (algoritmo de repostagem)
+
+A aba `Plano do dia` monta a grade diaria seguindo o fluxo da operacao: 1-2 videos
+novos por dia + preenchimento dos demais horarios (de 2 em 2 horas, configuravel) com
+os melhores reposts.
+
+Como o algoritmo escolhe os reposts (`lib/repost-engine.ts`):
+
+- **Pontuacao de repost (0-100)** por midia, combinando: desempenho passado (peso maior),
+  engajamento medio, alcance, "descanso" desde o ultimo post e uma penalidade de fadiga
+  por numero de reposts.
+- **Cooldown**: nao reposta a mesma midia antes do numero minimo de dias de descanso.
+- **Teto de reposts**: cada midia tem um limite de reaproveitamentos.
+- **Diversidade de tema**: evita repetir a mesma categoria/tema de tarot em horarios seguidos.
+- **Horario nobre**: prioriza os melhores conteudos no fim do dia (18h-21h), quando o
+  publico de tarot engaja mais.
+
+Cada horario da grade vem com o **motivo** da escolha. Ao clicar em `Aplicar plano`, os
+agendamentos sao criados na fila e o `repostCount` / `lastPostedAt` das midias e atualizado
+(fechando o ciclo para os proximos planos).
+
+### Legendas com IA (opcional)
+
+Marque `Gerar legendas novas com IA para os reposts` para criar legendas de tarot frescas
+por repost. Configure `OPENAI_API_KEY` (e opcionalmente `OPENAI_MODEL`) nas variaveis de
+ambiente. Sem a chave, o app usa uma variacao local automatica. Endpoint: `POST /api/ai/caption`
+(`lib/ai.ts`).
+
 ## Notes
 
 - New users can only be created by admins in the `Usuarios` section.

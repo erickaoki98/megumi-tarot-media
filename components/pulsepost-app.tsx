@@ -4,6 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import { networkLabels, seedState, SESSION_STORAGE_KEY, STORAGE_KEY } from "@/lib/constants";
 import { classNames, formatDate, formatNetworkList, getMediaHealth } from "@/lib/utils";
 import {
+  assessRepost,
+  buildDailyPlan,
+  DailyPlan,
+  defaultPlanOptions,
+  PlanOptions,
+  rankRepostCandidates,
+} from "@/lib/repost-engine";
+import {
   AppUser,
   FlashState,
   MediaItem,
@@ -32,7 +40,14 @@ type BundleClientStatus = {
   accounts: Record<NetworkKey, { connected: boolean; username: string | null }>;
   error: string | null;
   r2Configured: boolean;
+  aiConfigured: boolean;
 };
+
+function todayLocalDate(): string {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
 
 async function uploadFileToR2(file: File): Promise<{ url: string; type: MediaItem["type"] } | null> {
   const form = new FormData();
@@ -142,6 +157,12 @@ export function PulsePostApp() {
   const [scheduleFormKey, setScheduleFormKey] = useState(0);
   const [bundleStatus, setBundleStatus] = useState<BundleClientStatus | null>(null);
   const [publishingSchedule, setPublishingSchedule] = useState(false);
+  const [planOptions, setPlanOptions] = useState<PlanOptions>(defaultPlanOptions);
+  const [planDate, setPlanDate] = useState<string>(todayLocalDate());
+  const [planNewMediaIds, setPlanNewMediaIds] = useState<string[]>([]);
+  const [dailyPlan, setDailyPlan] = useState<DailyPlan | null>(null);
+  const [planUseAi, setPlanUseAi] = useState(false);
+  const [applyingPlan, setApplyingPlan] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -214,6 +235,123 @@ export function PulsePostApp() {
     () => data.mediaLibrary.filter((item) => (filters.mediaStatus === "all" ? true : item.status === filters.mediaStatus)),
     [data.mediaLibrary, filters.mediaStatus],
   );
+
+  const rankedCandidates = useMemo(
+    () => rankRepostCandidates(data.mediaLibrary, planOptions),
+    [data.mediaLibrary, planOptions],
+  );
+
+  const connectedNetworks = useMemo<NetworkKey[]>(() => {
+    const connected = (Object.keys(networkLabels) as NetworkKey[]).filter(
+      (network) => bundleStatus?.accounts?.[network]?.connected,
+    );
+    return connected.length ? connected : (Object.keys(networkLabels) as NetworkKey[]);
+  }, [bundleStatus]);
+
+  function togglePlanNewMedia(id: string) {
+    setPlanNewMediaIds((current) =>
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+    );
+  }
+
+  function generateDailyPlan() {
+    const plan = buildDailyPlan({
+      date: planDate,
+      library: data.mediaLibrary,
+      newMediaIds: planNewMediaIds,
+      options: planOptions,
+    });
+    setDailyPlan(plan);
+    setFlash({
+      message: `Plano gerado: ${plan.summary.news} novo(s), ${plan.summary.reposts} repost(s)${plan.summary.empty ? `, ${plan.summary.empty} vazio(s)` : ""}.`,
+      kind: plan.summary.empty ? "error" : "success",
+    });
+  }
+
+  async function applyDailyPlan() {
+    if (!dailyPlan) {
+      return;
+    }
+
+    const filledSlots = dailyPlan.slots.filter((slot) => slot.mediaId);
+    if (!filledSlots.length) {
+      setFlash({ message: "Nenhum horario preenchido para agendar.", kind: "error" });
+      return;
+    }
+
+    setApplyingPlan(true);
+    const newSchedules: ScheduleItem[] = [];
+    const repostedIds = new Set<string>();
+    const postedAtById = new Map<string, string>();
+
+    for (const slot of filledSlots) {
+      const media = data.mediaLibrary.find((item) => item.id === slot.mediaId);
+      if (!media) {
+        continue;
+      }
+
+      let caption = "";
+      if (planUseAi && slot.kind === "repost") {
+        try {
+          const response = await fetch("/api/ai/caption", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: media.title,
+              theme: media.category,
+              baseCaption: "",
+              network: connectedNetworks[0] ?? "instagram",
+            }),
+          });
+          const result = await response.json();
+          if (response.ok && result.ok) {
+            caption = String(result.caption ?? "");
+          }
+        } catch {
+          // mantém legenda vazia em caso de falha da IA
+        }
+      }
+
+      newSchedules.push({
+        id: randomId("schedule"),
+        title: `${slot.kind === "new" ? "Novo" : "Repost"} · ${media.title}`,
+        mediaId: media.id,
+        networks: connectedNetworks,
+        scheduledFor: slot.time,
+        caption,
+        status: "scheduled",
+        repostRuleId: null,
+        bundlePostId: null,
+        bundleStatus: null,
+      });
+
+      postedAtById.set(media.id, slot.time);
+      if (slot.kind === "repost") {
+        repostedIds.add(media.id);
+      }
+    }
+
+    const nextLibrary = data.mediaLibrary.map((item) => {
+      const postedAt = postedAtById.get(item.id);
+      if (!postedAt) {
+        return item;
+      }
+      return {
+        ...item,
+        lastPostedAt: postedAt,
+        repostCount: (item.repostCount ?? 0) + (repostedIds.has(item.id) ? 1 : 0),
+      };
+    });
+
+    persist(
+      { ...data, mediaLibrary: nextLibrary, schedules: [...newSchedules, ...data.schedules] },
+      `${newSchedules.length} horario(s) do plano agendado(s). Publique pela fila em Agendamentos.`,
+    );
+    setDailyPlan(null);
+    setPlanNewMediaIds([]);
+    setApplyingPlan(false);
+    setActiveView("scheduler");
+  }
 
 
   function persist(nextState: PersistedState, message?: string, kind: "success" | "error" = "success") {
@@ -747,6 +885,7 @@ export function PulsePostApp() {
                 {[
                   { key: "library", label: "Biblioteca" },
                   { key: "scheduler", label: "Agendamentos" },
+                  { key: "plan", label: "Plano do dia" },
                   { key: "reposts", label: "Repostagem" },
                   { key: "users", label: "Usuarios" },
                   { key: "config", label: "Config" },
@@ -906,6 +1045,20 @@ export function PulsePostApp() {
                               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
                                 media {health.average}/100
                               </span>
+                              {(() => {
+                                const repost = assessRepost(item, planOptions);
+                                return (
+                                  <span
+                                    className={classNames(
+                                      "rounded-full px-3 py-1 text-xs",
+                                      repost.recommended ? "bg-emerald-100 text-emerald-700" : "bg-violet/8 text-violet",
+                                    )}
+                                    title={repost.reasons.join(" ")}
+                                  >
+                                    repost {repost.score}/100{repost.recommended ? " ✓" : ""}
+                                  </span>
+                                );
+                              })()}
                             </div>
                             <div className="mt-4 flex flex-wrap gap-3">
                               <SecondaryButton label="Atualizar estatisticas" onClick={() => refreshStats(item.id)} />
@@ -1075,6 +1228,247 @@ export function PulsePostApp() {
                         ))}
                     </div>
                   </Card>
+                </section>
+              ) : null}
+
+              {activeView === "plan" ? (
+                <section className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+                  <Card
+                    title="Configurar o dia"
+                    description="Escolha os videos novos de hoje. O algoritmo preenche os horarios restantes com os reposts de melhor desempenho."
+                  >
+                    <div className="grid gap-5">
+                      <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4 text-sm leading-6 text-ink/65">
+                        <p className="font-medium text-ink">Como funciona</p>
+                        <ol className="mt-2 grid list-decimal gap-1 pl-5">
+                          <li>Marque os 1-2 videos novos do dia.</li>
+                          <li>Ajuste a janela e o intervalo (padrao: 9h-21h, de 2 em 2h).</li>
+                          <li>Clique em <strong>Gerar plano</strong> e revise a grade ao lado.</li>
+                          <li>Clique em <strong>Aplicar plano</strong> para criar os agendamentos.</li>
+                        </ol>
+                      </div>
+
+                      <label className="grid gap-2 text-sm font-medium">
+                        <span className="text-ink/75">Data do plano</span>
+                        <input
+                          type="date"
+                          value={planDate}
+                          onChange={(event) => setPlanDate(event.target.value)}
+                          className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 outline-none transition focus:border-violet focus:bg-white"
+                        />
+                      </label>
+
+                      <div className="grid gap-4 md:grid-cols-3">
+                        <NumberField
+                          label="Inicio (h)"
+                          value={planOptions.startHour}
+                          min={0}
+                          max={23}
+                          onChange={(value) => setPlanOptions((current) => ({ ...current, startHour: value }))}
+                        />
+                        <NumberField
+                          label="Fim (h)"
+                          value={planOptions.endHour}
+                          min={0}
+                          max={23}
+                          onChange={(value) => setPlanOptions((current) => ({ ...current, endHour: value }))}
+                        />
+                        <NumberField
+                          label="Intervalo (h)"
+                          value={planOptions.intervalHours}
+                          min={1}
+                          max={12}
+                          onChange={(value) => setPlanOptions((current) => ({ ...current, intervalHours: value }))}
+                        />
+                      </div>
+
+                      <div className="grid gap-4 md:grid-cols-3">
+                        <NumberField
+                          label="Descanso (dias)"
+                          hint="Dias minimos antes de repostar a mesma midia"
+                          value={planOptions.minDaysBetweenReposts}
+                          min={0}
+                          max={90}
+                          onChange={(value) => setPlanOptions((current) => ({ ...current, minDaysBetweenReposts: value }))}
+                        />
+                        <NumberField
+                          label="Score minimo"
+                          hint="Nota minima (0-100) para repostar"
+                          value={planOptions.minRepostScore}
+                          min={0}
+                          max={100}
+                          onChange={(value) => setPlanOptions((current) => ({ ...current, minRepostScore: value }))}
+                        />
+                        <NumberField
+                          label="Max reposts"
+                          hint="Limite de reposts por midia"
+                          value={planOptions.maxRepostsPerItem}
+                          min={1}
+                          max={20}
+                          onChange={(value) => setPlanOptions((current) => ({ ...current, maxRepostsPerItem: value }))}
+                        />
+                      </div>
+
+                      <fieldset className="grid gap-3">
+                        <legend className="text-sm font-medium text-ink/75">Videos novos de hoje</legend>
+                        <p className="text-xs text-ink/55">Selecione os conteudos gravados para hoje (recomendado 1 a 2).</p>
+                        <div className="grid gap-2">
+                          {data.mediaLibrary.filter((item) => item.status !== "archived").length === 0 ? (
+                            <p className="rounded-2xl border border-dashed border-violet/20 bg-violet/4 px-4 py-3 text-sm text-ink/55">
+                              Nenhuma midia ativa. Adicione conteudos na Biblioteca primeiro.
+                            </p>
+                          ) : null}
+                          {data.mediaLibrary
+                            .filter((item) => item.status !== "archived")
+                            .map((item) => {
+                              const checked = planNewMediaIds.includes(item.id);
+                              return (
+                                <label
+                                  key={item.id}
+                                  className={classNames(
+                                    "flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-sm transition",
+                                    checked ? "border-violet bg-violet/10" : "border-violet/10 bg-violet/5",
+                                  )}
+                                >
+                                  <span className="flex items-center gap-3">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => togglePlanNewMedia(item.id)}
+                                      className="size-4 accent-violet"
+                                    />
+                                    <span>
+                                      <span className="font-medium text-ink">{item.title}</span>
+                                      <span className="block text-xs text-ink/50">{item.category}</span>
+                                    </span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                        </div>
+                      </fieldset>
+
+                      <label className="flex items-center gap-3 rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={planUseAi}
+                          onChange={(event) => setPlanUseAi(event.target.checked)}
+                          className="size-4 accent-violet"
+                        />
+                        <span className="text-ink/75">
+                          Gerar legendas novas com IA para os reposts
+                          <span className="block text-xs text-ink/50">
+                            {bundleStatus?.aiConfigured
+                              ? "OpenAI configurada — legendas frescas de tarot por repost."
+                              : "Sem OPENAI_API_KEY: usa variacao local para o repost nao sair identico."}
+                          </span>
+                        </span>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={generateDailyPlan}
+                        className="mt-2 rounded-full bg-violet px-5 py-3 text-sm font-medium text-white"
+                      >
+                        Gerar plano do dia
+                      </button>
+                    </div>
+                  </Card>
+
+                  <div className="grid gap-5">
+                    <Card title="Grade gerada" description="Revise cada horario e o motivo da escolha antes de agendar.">
+                      {dailyPlan ? (
+                        <div className="grid gap-4">
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            <span className="rounded-full bg-violet/10 px-3 py-1 text-violet">{dailyPlan.summary.total} horarios</span>
+                            <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-700">{dailyPlan.summary.news} novo(s)</span>
+                            <span className="rounded-full bg-sky-100 px-3 py-1 text-sky-700">{dailyPlan.summary.reposts} repost(s)</span>
+                            {dailyPlan.summary.empty ? (
+                              <span className="rounded-full bg-amber-100 px-3 py-1 text-amber-700">{dailyPlan.summary.empty} vazio(s)</span>
+                            ) : null}
+                          </div>
+
+                          <div className="grid gap-2">
+                            {dailyPlan.slots.map((slot) => (
+                              <article
+                                key={slot.time}
+                                className={classNames(
+                                  "rounded-[1.1rem] border p-3",
+                                  slot.kind === "empty" ? "border-amber-200 bg-amber-50" : "border-violet/10 bg-white",
+                                )}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className="rounded-full bg-violet/8 px-3 py-1 text-xs font-medium text-violet">
+                                      {String(slot.hour).padStart(2, "0")}:00
+                                    </span>
+                                    {slot.prime ? (
+                                      <span className="rounded-full bg-rose-100 px-2 py-1 text-[10px] uppercase tracking-wide text-rose-700">
+                                        nobre
+                                      </span>
+                                    ) : null}
+                                    <SlotKindBadge kind={slot.kind} />
+                                  </div>
+                                  {slot.score !== null ? (
+                                    <span className="text-xs text-ink/55">score {slot.score}/100</span>
+                                  ) : null}
+                                </div>
+                                <p className="mt-2 text-sm font-medium text-ink">{slot.mediaTitle ?? "—"}</p>
+                                <p className="mt-1 text-xs leading-5 text-ink/55">{slot.reason}</p>
+                              </article>
+                            ))}
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={applyDailyPlan}
+                            disabled={applyingPlan}
+                            className="rounded-full bg-violet px-5 py-3 text-sm font-medium text-white disabled:opacity-60"
+                          >
+                            {applyingPlan ? "Agendando..." : "Aplicar plano (agendar tudo)"}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="rounded-[1.25rem] border border-dashed border-violet/20 bg-violet/4 px-4 py-8 text-center text-sm text-ink/55">
+                          Configure o dia ao lado e clique em <strong>Gerar plano do dia</strong> para ver a grade aqui.
+                        </div>
+                      )}
+                    </Card>
+
+                    <Card title="Ranking de repost" description="Conteudos ordenados pelo potencial de repostagem agora.">
+                      <div className="grid gap-2">
+                        {rankedCandidates.slice(0, 6).map(({ item, assessment }) => (
+                          <article key={item.id} className="rounded-[1.1rem] border border-violet/10 p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-medium text-ink">{item.title}</span>
+                              <span
+                                className={classNames(
+                                  "rounded-full px-3 py-1 text-xs",
+                                  assessment.recommended ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600",
+                                )}
+                              >
+                                {assessment.score}/100
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-ink/55">
+                              {assessment.recommended
+                                ? "Pronto para repostar"
+                                : assessment.inCooldown
+                                  ? "Em descanso"
+                                  : assessment.reachedRepostCap
+                                    ? "Limite de reposts atingido"
+                                    : "Abaixo do score minimo"}
+                              {" · "}
+                              {assessment.reasons[0]}
+                            </p>
+                          </article>
+                        ))}
+                        {rankedCandidates.length === 0 ? (
+                          <p className="text-sm text-ink/55">Sem midias para avaliar.</p>
+                        ) : null}
+                      </div>
+                    </Card>
+                  </div>
                 </section>
               ) : null}
 
@@ -1306,6 +1700,12 @@ const viewMeta: Record<
     actionLabel: "Abrir conexoes",
     onAction: (setActiveView) => () => setActiveView("config"),
   },
+  plan: {
+    title: "Plano do dia",
+    description: "Monte a grade do dia: 1-2 videos novos + reposts dos melhores conteudos, de 2 em 2 horas.",
+    actionLabel: "Ver fila",
+    onAction: (setActiveView) => () => setActiveView("scheduler"),
+  },
   reposts: {
     title: "Repostagem",
     description: "Configure os gatilhos de reaproveitamento e de remocao por score.",
@@ -1329,6 +1729,7 @@ const viewMeta: Record<
 const pageTitleMap: Record<ViewKey, string> = {
   library: "Biblioteca",
   scheduler: "Agendamentos",
+  plan: "Plano do dia",
   reposts: "Repostagem",
   users: "Usuarios",
   config: "Config",
@@ -1425,6 +1826,8 @@ function NavIcon({ view }: { view: ViewKey }) {
     case "library":
       return <LibraryIcon className="size-4" />;
     case "scheduler":
+      return <CalendarIcon className="size-4" />;
+    case "plan":
       return <CalendarIcon className="size-4" />;
     case "reposts":
       return <CycleIcon className="size-4" />;
@@ -1565,6 +1968,50 @@ function CheckCard({ name, value, label }: { name: string; value: string; label:
       <span className="text-sm text-ink/75">{label}</span>
     </label>
   );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  hint,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  hint?: string;
+}) {
+  return (
+    <label className="grid gap-2 text-sm font-medium">
+      <span className="text-ink/75">{label}</span>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          onChange(Number.isNaN(next) ? 0 : next);
+        }}
+        className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 outline-none transition focus:border-violet focus:bg-white"
+      />
+      {hint ? <span className="text-xs font-normal text-ink/50">{hint}</span> : null}
+    </label>
+  );
+}
+
+function SlotKindBadge({ kind }: { kind: "new" | "repost" | "empty" }) {
+  const map = {
+    new: { label: "novo", className: "bg-emerald-100 text-emerald-700" },
+    repost: { label: "repost", className: "bg-sky-100 text-sky-700" },
+    empty: { label: "vazio", className: "bg-amber-100 text-amber-700" },
+  } as const;
+  const meta = map[kind];
+  return <span className={classNames("rounded-full px-2 py-1 text-[10px] uppercase tracking-wide", meta.className)}>{meta.label}</span>;
 }
 
 function PrimaryButton({ label }: { label: string }) {
