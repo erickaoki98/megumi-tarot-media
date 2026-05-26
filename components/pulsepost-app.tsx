@@ -22,6 +22,7 @@ import {
   ScheduleItem,
   ViewKey,
 } from "@/types/app";
+import { MediaPicker, MediaPickerTrigger } from "@/components/media-picker";
 
 type FiltersState = {
   mediaStatus: "all" | MediaStatus;
@@ -163,6 +164,7 @@ function prefillMediaFormFromFile(file: File, form: HTMLFormElement | null) {
   probe.preload = "metadata";
   const finish = (seconds: number) => {
     setFormFieldValue(form, "duration", formatDurationSeconds(seconds));
+    setFormFieldValue(form, "format", seconds < 15 ? "Story" : "Reel");
     URL.revokeObjectURL(objectUrl);
   };
   probe.onloadedmetadata = () => {
@@ -232,6 +234,8 @@ export function PulsePostApp() {
   const [dailyPlan, setDailyPlan] = useState<DailyPlan | null>(null);
   const [planUseAi, setPlanUseAi] = useState(false);
   const [applyingPlan, setApplyingPlan] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerMediaId, setPickerMediaId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -590,6 +594,7 @@ export function PulsePostApp() {
     const baseState = { ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules] };
     persist(baseState, "Agendamento criado.");
     setScheduleFormPreview(null);
+    setPickerMediaId(null);
 
     if (bundleMode !== "off") {
       if (!resolvedMediaUrl && !uploadedFile) {
@@ -1145,14 +1150,31 @@ export function PulsePostApp() {
                   <Card title="Novo agendamento" description="Programe uma postagem para varias redes ao mesmo tempo.">
                     <FormGrid key={scheduleFormKey} action={handleCreateSchedule}>
                       <Field label="Titulo interno" name="title" placeholder="Lote de domingo" />
-                      <SelectField
-                        label="Midia"
-                        name="mediaId"
-                        options={[
-                          { label: "Sem vinculo", value: "" },
-                          ...data.mediaLibrary.map((item) => ({ label: item.title, value: item.id })),
-                        ]}
-                      />
+                      <div className="grid gap-2 text-sm font-medium">
+                        <span className="text-ink/75">Mídia</span>
+                        <input type="hidden" name="mediaId" value={pickerMediaId ?? ""} />
+                        <MediaPickerTrigger
+                          label={pickerMediaId ? (data.mediaLibrary.find((m) => m.id === pickerMediaId)?.title ?? "Mídia selecionada") : "Escolher da biblioteca…"}
+                          onClick={() => setPickerOpen(true)}
+                        />
+                        {pickerMediaId ? (
+                          <button
+                            type="button"
+                            onClick={() => setPickerMediaId(null)}
+                            className="text-left text-xs text-ink/45 hover:text-violet"
+                          >
+                            ✕ Remover vínculo
+                          </button>
+                        ) : null}
+                      </div>
+                      {pickerOpen ? (
+                        <MediaPicker
+                          library={data.mediaLibrary}
+                          selectedId={pickerMediaId}
+                          onSelect={setPickerMediaId}
+                          onClose={() => setPickerOpen(false)}
+                        />
+                      ) : null}
                       <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4">
                         <div className="mb-4">
                           <h4 className="font-medium text-ink">Adicionar nova midia neste agendamento</h4>
