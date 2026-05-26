@@ -204,7 +204,12 @@ export async function getBundleStatus(): Promise<BundleStatus> {
             accounts[network] = { connected: true, username: account.username ?? null };
           }
         } catch (error) {
-          if (error instanceof BundleSocialError && error.status === 404) {
+          // bundle.social returns 400/404 with "Team does not have a X account"
+          // when the account simply isn't connected — treat that as "not connected".
+          if (
+            error instanceof BundleSocialError &&
+            (error.status === 404 || error.status === 400 || /does not have/i.test(error.message))
+          ) {
             return;
           }
           throw error;

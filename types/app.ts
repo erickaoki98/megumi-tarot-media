@@ -57,35 +57,6 @@ export type AppUser = {
   createdAt: string;
 };
 
-export type SocialConnection = {
-  id: string;
-  network: NetworkKey;
-  status: "connected" | "pending" | "disconnected";
-  accountName: string;
-  accountId: string;
-  pageId: string;
-  redirectUri: string;
-  scopes: string;
-  webhookUrl: string;
-  lastSync: string | null;
-};
-
-export type SecureConnectionFieldStatus = {
-  name: string;
-  label: string;
-  envName: string;
-  required: boolean;
-  configured: boolean;
-  maskedValue: string | null;
-  help: string;
-};
-
-export type SecureConnectionSummary = {
-  network: NetworkKey;
-  ready: boolean;
-  fields: SecureConnectionFieldStatus[];
-};
-
 export type AuditEntry = {
   id: string;
   type: string;
@@ -98,7 +69,6 @@ export type PersistedState = {
   mediaLibrary: MediaItem[];
   schedules: ScheduleItem[];
   repostRules: RepostRule[];
-  connections: SocialConnection[];
   audit: AuditEntry[];
 };
 

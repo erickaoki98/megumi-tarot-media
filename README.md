@@ -36,13 +36,9 @@ Recommended production settings:
 
 ## Secure API secrets
 
-Social platform secrets should not be stored in the browser or in `localStorage`.
-
-Use `.env.example` as the reference and configure the real values in:
-
-- `Vercel -> Project Settings -> Environment Variables`
-
-The UI now reads only masked server-side status for those variables so you can confirm what is configured without exposing the raw secrets.
+Secrets live only in server-side environment variables (`Vercel -> Project Settings ->
+Environment Variables`), never in the browser or `localStorage`. Use `.env.example` as
+the reference. Publishing needs only the bundle.social and Cloudflare R2 variables below.
 
 ## Publishing via bundle.social
 
