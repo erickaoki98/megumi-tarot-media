@@ -112,6 +112,75 @@ function inferMediaTypeFromFile(file: File): MediaItem["type"] {
   return file.type.startsWith("image/") ? "image" : "video";
 }
 
+function stripExtension(name: string): string {
+  return name.replace(/\.[^./\\]+$/, "");
+}
+
+function formatDurationSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "";
+  }
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function setFormFieldValue(
+  form: HTMLFormElement | null,
+  name: string,
+  value: string,
+  onlyIfEmpty = false,
+) {
+  if (!form) {
+    return;
+  }
+  const element = form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null;
+  if (!element) {
+    return;
+  }
+  if (onlyIfEmpty && element.value.trim()) {
+    return;
+  }
+  element.value = value;
+}
+
+// Auto-fills a media form from the chosen file: suggests title/filename/type and
+// reads the real video duration from metadata. Title is only suggested when empty.
+function prefillMediaFormFromFile(file: File, form: HTMLFormElement | null) {
+  const type = inferMediaTypeFromFile(file);
+  setFormFieldValue(form, "fileName", file.name);
+  setFormFieldValue(form, "title", stripExtension(file.name), true);
+  setFormFieldValue(form, "type", type);
+
+  if (type === "image") {
+    setFormFieldValue(form, "duration", "Imagem");
+    return;
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  const probe = document.createElement("video");
+  probe.preload = "metadata";
+  const finish = (seconds: number) => {
+    setFormFieldValue(form, "duration", formatDurationSeconds(seconds));
+    URL.revokeObjectURL(objectUrl);
+  };
+  probe.onloadedmetadata = () => {
+    // Some containers (e.g. MediaRecorder webm) report Infinity until seeked.
+    if (probe.duration === Infinity || Number.isNaN(probe.duration)) {
+      probe.ontimeupdate = () => {
+        probe.ontimeupdate = null;
+        finish(probe.duration);
+      };
+      probe.currentTime = 1e101;
+      return;
+    }
+    finish(probe.duration);
+  };
+  probe.onerror = () => URL.revokeObjectURL(objectUrl);
+  probe.src = objectUrl;
+}
+
 function buildMediaItem(params: {
   id: string;
   title: string;
@@ -404,12 +473,12 @@ export function PulsePostApp() {
 
     const nextItem = buildMediaItem({
       id: nextItemId,
-      title: String(formData.get("title") ?? "").trim(),
+      title: String(formData.get("title") ?? "").trim() || stripExtension(fileName),
       type: inferredType ?? (String(formData.get("type") ?? "video") as MediaItem["type"]),
       format: String(formData.get("format") ?? "").trim(),
       duration: String(formData.get("duration") ?? "").trim() || (inferredType === "image" ? "Imagem" : "00:00"),
       status: String(formData.get("status") ?? "active") as MediaStatus,
-      category: String(formData.get("category") ?? "").trim(),
+      category: "Geral",
       fileName,
       url: storedUrl,
     });
@@ -932,6 +1001,7 @@ export function PulsePostApp() {
                           className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 text-sm outline-none transition file:mr-4 file:rounded-full file:border-0 file:bg-violet file:px-4 file:py-2 file:text-white focus:border-violet focus:bg-white"
                           onChange={(event) => {
                             const file = event.currentTarget.files?.[0];
+                            const form = event.currentTarget.form;
                             if (!file) {
                               setMediaFormPreview(null);
                               return;
@@ -942,14 +1012,12 @@ export function PulsePostApp() {
                               type: inferMediaTypeFromFile(file),
                               url: URL.createObjectURL(file),
                             });
+                            prefillMediaFormFromFile(file, form);
                           }}
                         />
                       </label>
                       <AssetPreview preview={mediaFormPreview} title="Preview da nova midia" />
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <Field label="Arquivo (opcional se houver upload)" name="fileName" placeholder="video.mp4" required={false} />
-                        <Field label="Categoria" name="category" placeholder="Campanha" />
-                      </div>
+                      <Field label="Arquivo (opcional se houver upload)" name="fileName" placeholder="video.mp4" required={false} />
                       <div className="grid gap-4 md:grid-cols-2">
                         <SelectField
                           label="Tipo"
@@ -962,7 +1030,7 @@ export function PulsePostApp() {
                         <Field label="Formato" name="format" placeholder="Reel / Story" />
                       </div>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <Field label="Duracao" name="duration" placeholder="00:30 ou Imagem" />
+                        <Field label="Duracao (preenchida pelo video)" name="duration" placeholder="00:30 ou Imagem" required={false} />
                         <SelectField
                           label="Status"
                           name="status"
