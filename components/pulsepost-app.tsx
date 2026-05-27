@@ -30,6 +30,7 @@ import { MediaPicker, MediaPickerTrigger } from "@/components/media-picker";
 
 type FiltersState = {
   mediaStatus: "all" | MediaStatus;
+  contentType: "all" | ContentType;
 };
 
 type DraftPreviewState = {
@@ -107,6 +108,7 @@ async function uploadFileToR2(file: File): Promise<{ url: string; type: MediaIte
 
 const defaultFilters: FiltersState = {
   mediaStatus: "all",
+  contentType: "all",
 };
 
 function loadState(): PersistedState {
@@ -273,26 +275,33 @@ function prefillMediaFormFromFile(
 
 function buildMediaItem(params: {
   id: string;
+  numericId: number;
   title: string;
   type: MediaItem["type"];
   format: string;
+  contentType?: ContentType;
   duration: string;
   status: MediaStatus;
   category: string;
   fileName: string;
   url?: string | null;
+  isAd?: boolean;
 }): MediaItem {
+  const ct = params.contentType ?? inferContentType(params.format, params.isAd);
   return {
     id: params.id,
+    numericId: params.numericId,
     title: params.title,
     type: params.type,
     format: params.format,
+    contentType: ct,
     duration: params.duration,
     status: params.status,
     category: params.category,
     fileName: params.fileName,
     url: params.url ?? null,
     createdAt: new Date().toISOString(),
+    compositeScore: 0,
     stats: {
       instagram: { views: 0, engagement: 0, score: 0 },
       facebook: { views: 0, engagement: 0, score: 0 },
@@ -326,6 +335,7 @@ export function PulsePostApp() {
   const [planDate, setPlanDate] = useState<string>(todayLocalDate());
   const [planNewMediaIds, setPlanNewMediaIds] = useState<string[]>([]);
   const [dailyPlan, setDailyPlan] = useState<DailyPlan | null>(null);
+  const [scheduleContentType, setScheduleContentType] = useState<ContentType>("reel");
   const [planUseAi, setPlanUseAi] = useState(false);
   const [applyingPlan, setApplyingPlan] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -406,8 +416,13 @@ export function PulsePostApp() {
   );
 
   const filteredMedia = useMemo(
-    () => data.mediaLibrary.filter((item) => (filters.mediaStatus === "all" ? true : item.status === filters.mediaStatus)),
-    [data.mediaLibrary, filters.mediaStatus],
+    () =>
+      data.mediaLibrary.filter((item) => {
+        if (filters.mediaStatus !== "all" && item.status !== filters.mediaStatus) return false;
+        if (filters.contentType !== "all" && item.contentType !== filters.contentType) return false;
+        return true;
+      }),
+    [data.mediaLibrary, filters.mediaStatus, filters.contentType],
   );
 
   const rankedCandidates = useMemo(
@@ -633,11 +648,14 @@ export function PulsePostApp() {
       }
     }
 
+    const nextNumId = data.nextMediaNumericId ?? 1;
     const nextItem = buildMediaItem({
       id: nextItemId,
+      numericId: nextNumId,
       title: String(formData.get("title") ?? "").trim() || stripExtension(fileName),
       type: inferredType ?? (String(formData.get("type") ?? "video") as MediaItem["type"]),
       format: String(formData.get("format") ?? "").trim(),
+      contentType: String(formData.get("contentType") ?? "") as ContentType || undefined,
       duration: String(formData.get("duration") ?? "").trim() || (inferredType === "image" ? "Imagem" : "00:00"),
       status: String(formData.get("status") ?? "active") as MediaStatus,
       category: "Geral",
@@ -653,7 +671,7 @@ export function PulsePostApp() {
     }
 
     persist(
-      { ...data, mediaLibrary: [nextItem, ...data.mediaLibrary] },
+      { ...data, mediaLibrary: [nextItem, ...data.mediaLibrary], nextMediaNumericId: nextNumId + 1 },
       storedUrl ? "Midia enviada para o R2 e adicionada na biblioteca." : "Midia adicionada na biblioteca.",
     );
     setMediaFormPreview(null);
@@ -709,8 +727,10 @@ export function PulsePostApp() {
         }
       }
 
+      const schedNextId = data.nextMediaNumericId ?? 1;
       const nextMediaItem = buildMediaItem({
         id: nextItemId,
+        numericId: schedNextId,
         title: manualMediaTitle,
         type: inferredType,
         format: manualFormat || "Post manual",
@@ -722,6 +742,7 @@ export function PulsePostApp() {
       });
 
       nextMediaLibrary = [nextMediaItem, ...data.mediaLibrary];
+      // We'll increment nextMediaNumericId when persisting below
       mediaId = nextItemId;
 
       if (uploadedFile && scheduleFormPreview) {
@@ -737,6 +758,9 @@ export function PulsePostApp() {
     const title = String(formData.get("title") ?? "").trim();
     const woopMode = String(formData.get("woopMode") ?? "off");
 
+    const schedContentType = (String(formData.get("scheduleContentType") ?? "") || undefined) as ContentType | undefined;
+    const isStory = schedContentType === "story";
+
     const nextSchedule: ScheduleItem = {
       id: randomId("schedule"),
       title,
@@ -744,13 +768,16 @@ export function PulsePostApp() {
       networks,
       scheduledFor,
       caption,
+      contentType: schedContentType,
       status: "scheduled",
       repostRuleId: String(formData.get("repostRuleId") ?? "") || null,
       woopPostId: null,
       woopStatus: null,
+      storyNotification: isStory,
     };
 
-    const baseState = { ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules] };
+    const newNextNumId = nextMediaLibrary !== data.mediaLibrary ? (data.nextMediaNumericId ?? 1) + 1 : data.nextMediaNumericId;
+    const baseState = { ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules], nextMediaNumericId: newNextNumId };
     persist(baseState, "Agendamento criado.");
     setScheduleFormPreview(null);
     setDetectedScheduleMediaInfo(null);
@@ -808,6 +835,7 @@ export function PulsePostApp() {
     }
 
     setScheduleFormKey((current) => current + 1);
+    setScheduleContentType("reel");
   }
 
   async function publishExistingSchedule(schedule: ScheduleItem, mode: "scheduled" | "draft" = "scheduled") {
@@ -1188,52 +1216,75 @@ export function PulsePostApp() {
               ) : null}
 
               {activeView === "library" ? (
-                <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-                  <Card title="Nova midia" description="Adicione fotos e videos para uso em varias redes.">
-                    <FormGrid key={mediaFormKey} action={handleCreateMedia}>
-                      <Field label="Titulo" name="title" placeholder="Ex: video da semana" />
-                      <label className="grid gap-2 text-sm font-medium">
-                        <span className="text-ink/75">Upload do arquivo</span>
-                        <input
-                          name="uploadFile"
-                          type="file"
-                          accept="video/*,image/*"
-                          className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 text-sm outline-none transition file:mr-4 file:rounded-full file:border-0 file:bg-violet file:px-4 file:py-2 file:text-white focus:border-violet focus:bg-white"
-                          onChange={(event) => {
-                            const file = event.currentTarget.files?.[0];
-                            const form = event.currentTarget.form;
-                            if (!file) {
-                              setMediaFormPreview(null);
-                              return;
-                            }
+                <section className="grid gap-5">
+                  {/* Add new media — collapsible */}
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setMediaFormKey((k) => (k === -1 ? 0 : -1))}
+                      className="rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet/15 transition hover:bg-violet/85"
+                    >
+                      {mediaFormKey === -1 ? "+ Nova midia" : "Cancelar"}
+                    </button>
+                    <p className="text-sm text-ink/40">{data.mediaLibrary.length} midias no acervo</p>
+                  </div>
 
-                            setMediaFormPreview({
-                              name: file.name,
-                              type: inferMediaTypeFromFile(file),
-                              url: URL.createObjectURL(file),
-                            });
-                            prefillMediaFormFromFile(file, form, setDetectedMediaInfo);
-                          }}
-                        />
-                      </label>
-                      <AssetPreview preview={mediaFormPreview} title="Preview da nova midia" />
-                      {detectedMediaInfo && (
-                        <p className="rounded-xl bg-violet/8 px-4 py-2 text-sm text-ink/70">
-                          Duracao: <span className="font-medium text-ink">{detectedMediaInfo.duration}</span> · Formato: <span className="font-medium text-ink">{detectedMediaInfo.format}</span>
-                        </p>
-                      )}
-                      <Field label="Arquivo (opcional se houver upload)" name="fileName" placeholder="video.mp4" required={false} />
-                      <input type="hidden" name="duration" />
-                      <input type="hidden" name="format" />
-                      <SelectField
-                        label="Tipo"
-                        name="type"
-                        options={[
-                          { label: "Video", value: "video" },
-                          { label: "Imagem", value: "image" },
-                        ]}
-                      />
-                      <div className="grid gap-4 md:grid-cols-2">
+                  {mediaFormKey !== -1 && (
+                    <Card title="Nova midia" description="Adicione fotos e videos para uso em varias redes.">
+                      <FormGrid key={mediaFormKey} action={handleCreateMedia}>
+                        <Field label="Titulo" name="title" placeholder="Ex: video da semana" />
+                        <label className="grid gap-2 text-sm font-medium">
+                          <span className="text-ink/75">Upload do arquivo</span>
+                          <input
+                            name="uploadFile"
+                            type="file"
+                            accept="video/*,image/*"
+                            className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 text-sm outline-none transition file:mr-4 file:rounded-full file:border-0 file:bg-violet file:px-4 file:py-2 file:text-white focus:border-violet focus:bg-white"
+                            onChange={(event) => {
+                              const file = event.currentTarget.files?.[0];
+                              const form = event.currentTarget.form;
+                              if (!file) {
+                                setMediaFormPreview(null);
+                                return;
+                              }
+                              setMediaFormPreview({
+                                name: file.name,
+                                type: inferMediaTypeFromFile(file),
+                                url: URL.createObjectURL(file),
+                              });
+                              prefillMediaFormFromFile(file, form, setDetectedMediaInfo);
+                            }}
+                          />
+                        </label>
+                        <AssetPreview preview={mediaFormPreview} title="Preview da nova midia" />
+                        {detectedMediaInfo && (
+                          <p className="rounded-xl bg-violet/8 px-4 py-2 text-sm text-ink/70">
+                            Duracao: <span className="font-medium text-ink">{detectedMediaInfo.duration}</span> · Formato: <span className="font-medium text-ink">{detectedMediaInfo.format}</span>
+                          </p>
+                        )}
+                        <Field label="Arquivo (opcional se houver upload)" name="fileName" placeholder="video.mp4" required={false} />
+                        <input type="hidden" name="duration" />
+                        <input type="hidden" name="format" />
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <SelectField
+                            label="Tipo"
+                            name="type"
+                            options={[
+                              { label: "Video", value: "video" },
+                              { label: "Imagem", value: "image" },
+                            ]}
+                          />
+                          <SelectField
+                            label="Tipo de conteudo"
+                            name="contentType"
+                            options={[
+                              { label: "Reels", value: "reel" },
+                              { label: "Story", value: "story" },
+                              { label: "Anuncio", value: "ad" },
+                              { label: "Organico", value: "organic" },
+                            ]}
+                          />
+                        </div>
                         <SelectField
                           label="Status"
                           name="status"
@@ -1243,103 +1294,149 @@ export function PulsePostApp() {
                             { label: "Arquivada", value: "archived" },
                           ]}
                         />
-                      </div>
-                      <PrimaryButton label="Salvar midia" />
-                    </FormGrid>
-                  </Card>
+                        <PrimaryButton label="Salvar midia" />
+                      </FormGrid>
+                    </Card>
+                  )}
 
-                  <Card title="Biblioteca" description="Visual limpo para filtrar, revisar e remover ativos.">
-                    <div className="mb-5 flex flex-wrap gap-2">
-                      {[
-                        { label: "Todos", value: "all" },
-                        { label: "Ativas", value: "active" },
-                        { label: "Revisao", value: "review" },
-                        { label: "Arquivadas", value: "archived" },
-                      ].map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() =>
-                            setFilters((current) => ({
-                              ...current,
-                              mediaStatus: option.value as FiltersState["mediaStatus"],
-                            }))
-                          }
-                          className={classNames(
-                            "rounded-full px-4 py-2 text-sm",
-                            filters.mediaStatus === option.value ? "bg-violet text-white" : "bg-violet/6 text-ink/70",
-                          )}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
+                  {/* Filters */}
+                  <div className="flex flex-wrap gap-2">
+                    {/* Status filters */}
+                    {[
+                      { label: "Todos", value: "all" as const },
+                      { label: "Ativas", value: "active" as const },
+                      { label: "Revisao", value: "review" as const },
+                      { label: "Arquivadas", value: "archived" as const },
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setFilters((c) => ({ ...c, mediaStatus: option.value }))}
+                        className={classNames(
+                          "rounded-full px-3.5 py-1.5 text-xs font-medium transition",
+                          filters.mediaStatus === option.value ? "bg-violet text-white" : "bg-violet/6 text-ink/60 hover:bg-violet/12",
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                    <span className="mx-1 self-center text-violet/20">|</span>
+                    {/* Content type filters */}
+                    <button
+                      type="button"
+                      onClick={() => setFilters((c) => ({ ...c, contentType: "all" }))}
+                      className={classNames(
+                        "rounded-full px-3.5 py-1.5 text-xs font-medium transition",
+                        filters.contentType === "all" ? "bg-violet text-white" : "bg-violet/6 text-ink/60 hover:bg-violet/12",
+                      )}
+                    >
+                      Todos tipos
+                    </button>
+                    {(Object.entries(contentTypeLabels) as [ContentType, string][]).map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setFilters((c) => ({ ...c, contentType: key }))}
+                        className={classNames(
+                          "rounded-full px-3.5 py-1.5 text-xs font-medium transition",
+                          filters.contentType === key ? contentTypeColors[key] : "bg-violet/6 text-ink/60 hover:bg-violet/12",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
 
-                    <div className="grid gap-3">
-                      {filteredMedia.map((item) => {
-                        const health = getMediaHealth(item);
-                        const preview = ephemeralMediaPreviews[item.id] ?? null;
-                        return (
-                          <article key={item.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                  {/* Media grid */}
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {filteredMedia.length === 0 && (
+                      <p className="col-span-full rounded-2xl border border-dashed border-violet/15 px-6 py-10 text-center text-sm text-ink/40">
+                        Nenhuma midia encontrada com esses filtros.
+                      </p>
+                    )}
+                    {filteredMedia.map((item) => {
+                      const health = getMediaHealth(item);
+                      const preview = ephemeralMediaPreviews[item.id] ?? null;
+                      const score = item.compositeScore ?? health.average;
+                      return (
+                        <article key={item.id} className="group relative overflow-hidden rounded-[1.25rem] border border-violet/10 bg-white transition hover:border-violet/25 hover:shadow-lg hover:shadow-violet/5">
+                          {/* Thumbnail / preview area */}
+                          <div className="relative aspect-video overflow-hidden bg-gradient-to-br from-violet/5 to-violet/10">
                             {preview ? (
-                              <div className="mb-4 overflow-hidden rounded-[1rem] border border-violet/10 bg-violet/4">
-                                {preview.type === "video" ? (
-                                  <video controls className="max-h-72 w-full bg-black/80" src={preview.url} />
-                                ) : (
-                                  <img src={preview.url} alt={item.title} className="max-h-72 w-full object-cover" />
-                                )}
+                              preview.type === "video" ? (
+                                <video controls className="h-full w-full object-cover" src={preview.url} />
+                              ) : (
+                                <img src={preview.url} alt={item.title} className="h-full w-full object-cover" />
+                              )
+                            ) : item.thumbnailUrl ? (
+                              <img src={item.thumbnailUrl} alt={item.title} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="flex h-full items-center justify-center">
+                                <span className="text-3xl text-violet/20">{item.type === "video" ? "🎬" : "🖼️"}</span>
                               </div>
-                            ) : null}
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div>
-                                <h3 className="font-medium">{item.title}</h3>
-                                <p className="mt-1 text-sm text-ink/55">
-                                  {item.fileName} · {item.format} · {item.category}
-                                </p>
-                              </div>
-                              <span className="rounded-full bg-violet/8 px-3 py-1 text-xs text-violet">{item.status}</span>
+                            )}
+                            {/* Numeric ID badge */}
+                            <span className="absolute left-2.5 top-2.5 rounded-lg bg-black/60 px-2 py-0.5 text-xs font-bold text-white backdrop-blur-sm">
+                              #{String(item.numericId ?? 0).padStart(4, "0")}
+                            </span>
+                            {/* Score badge */}
+                            <span className={classNames(
+                              "absolute right-2.5 top-2.5 rounded-lg px-2 py-0.5 text-xs font-bold backdrop-blur-sm",
+                              score >= 70 ? "bg-emerald-500/90 text-white" : score >= 40 ? "bg-amber-500/90 text-white" : "bg-rose-500/90 text-white",
+                            )}>
+                              {score}
+                            </span>
+                            {/* Duration badge */}
+                            {item.duration && item.duration !== "Imagem" && (
+                              <span className="absolute bottom-2.5 right-2.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+                                {item.duration}
+                              </span>
+                            )}
+                          </div>
+                          {/* Info area */}
+                          <div className="p-3.5">
+                            <div className="mb-2 flex items-center gap-1.5">
+                              <span className={classNames("rounded-full px-2 py-0.5 text-[10px] font-bold", contentTypeColors[item.contentType ?? "organic"])}>
+                                {contentTypeLabels[item.contentType ?? "organic"]}
+                              </span>
+                              <span className={classNames(
+                                "rounded-full px-2 py-0.5 text-[10px] font-bold",
+                                item.status === "active" ? "bg-emerald-100 text-emerald-700" : item.status === "review" ? "bg-amber-100 text-amber-700" : "bg-ink/8 text-ink/40",
+                              )}>
+                                {item.status === "active" ? "Ativa" : item.status === "review" ? "Revisao" : "Arquivada"}
+                              </span>
                             </div>
-                            <div className="mt-3 flex flex-wrap gap-2">
+                            <h3 className="line-clamp-1 text-sm font-semibold text-ink">{item.title}</h3>
+                            <p className="mt-0.5 line-clamp-1 text-xs text-ink/45">{item.fileName}</p>
+                            {/* Per-network mini scores */}
+                            <div className="mt-2.5 flex flex-wrap gap-1.5">
                               {(Object.keys(item.stats) as NetworkKey[])
-                                .filter((network) => item.stats[network].views > 0)
-                                .map((network) => (
-                                  <span
-                                    key={network}
-                                    className={classNames(
-                                      "rounded-full px-3 py-1 text-xs",
-                                      item.stats[network].score < 35 ? "bg-rose-100 text-rose-700" : "bg-violet/8 text-violet",
-                                    )}
-                                  >
-                                    {networkLabels[network]} {item.stats[network].score}/100
+                                .filter((net) => item.stats[net].views > 0)
+                                .map((net) => (
+                                  <span key={net} className="inline-flex items-center gap-1 rounded-md bg-violet/6 px-1.5 py-0.5 text-[10px] text-ink/55">
+                                    <span className="font-medium text-ink/70">{networkLabels[net].slice(0, 2).toUpperCase()}</span>
+                                    <span className={classNames(
+                                      "font-bold",
+                                      item.stats[net].score >= 70 ? "text-emerald-600" : item.stats[net].score >= 40 ? "text-amber-600" : "text-rose-500",
+                                    )}>
+                                      {item.stats[net].score}
+                                    </span>
                                   </span>
                                 ))}
-                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-                                media {health.average}/100
-                              </span>
-                              {(() => {
-                                const repost = assessRepost(item, planOptions);
-                                return (
-                                  <span
-                                    className={classNames(
-                                      "rounded-full px-3 py-1 text-xs",
-                                      repost.recommended ? "bg-emerald-100 text-emerald-700" : "bg-violet/8 text-violet",
-                                    )}
-                                    title={repost.reasons.join(" ")}
-                                  >
-                                    repost {repost.score}/100{repost.recommended ? " ✓" : ""}
-                                  </span>
-                                );
-                              })()}
+                              {Object.values(item.stats).every((s) => s.views === 0) && (
+                                <span className="text-[10px] text-ink/30">Sem dados ainda</span>
+                              )}
                             </div>
-                            <div className="mt-4 flex flex-wrap gap-3">
-                              <SecondaryButton label="Atualizar estatisticas" onClick={() => refreshStats(item.id)} />
-                              <GhostDangerButton label="Remover" onClick={() => removeMedia(item.id)} />
+                            {/* Actions */}
+                            <div className="mt-3 flex gap-2">
+                              <button type="button" onClick={() => refreshStats(item.id)} className="rounded-full bg-violet/8 px-3 py-1 text-[11px] font-medium text-violet transition hover:bg-violet/15">Atualizar</button>
+                              <button type="button" onClick={() => removeMedia(item.id)} className="rounded-full bg-rose-50 px-3 py-1 text-[11px] font-medium text-rose-500 transition hover:bg-rose-100">Remover</button>
                             </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </Card>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
                 </section>
               ) : null}
 
@@ -1347,21 +1444,42 @@ export function PulsePostApp() {
                 <section className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
                   <Card title="Novo agendamento" description="Programe uma postagem para varias redes ao mesmo tempo.">
                     <FormGrid key={scheduleFormKey} action={handleCreateSchedule}>
+                      {/* Step 1 — Content type selector (determines which fields show) */}
+                      <div className="grid gap-2">
+                        <span className="text-sm font-medium text-ink/75">Tipo de conteudo</span>
+                        <input type="hidden" name="scheduleContentType" value={scheduleContentType} />
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          {(Object.entries(contentTypeLabels) as [ContentType, string][]).map(([key, label]) => (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => setScheduleContentType(key)}
+                              className={classNames(
+                                "rounded-xl border-2 px-3 py-2.5 text-sm font-medium transition",
+                                scheduleContentType === key
+                                  ? "border-violet bg-violet/8 text-violet"
+                                  : "border-violet/10 text-ink/50 hover:border-violet/25",
+                              )}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       <Field label="Titulo interno" name="title" placeholder="Lote de domingo" />
+
+                      {/* Media picker */}
                       <div className="grid gap-2 text-sm font-medium">
-                        <span className="text-ink/75">Mídia</span>
+                        <span className="text-ink/75">Midia</span>
                         <input type="hidden" name="mediaId" value={pickerMediaId ?? ""} />
                         <MediaPickerTrigger
-                          label={pickerMediaId ? (data.mediaLibrary.find((m) => m.id === pickerMediaId)?.title ?? "Mídia selecionada") : "Escolher da biblioteca…"}
+                          label={pickerMediaId ? (data.mediaLibrary.find((m) => m.id === pickerMediaId)?.title ?? "Midia selecionada") : "Escolher da biblioteca..."}
                           onClick={() => setPickerOpen(true)}
                         />
                         {pickerMediaId ? (
-                          <button
-                            type="button"
-                            onClick={() => setPickerMediaId(null)}
-                            className="text-left text-xs text-ink/45 hover:text-violet"
-                          >
-                            ✕ Remover vínculo
+                          <button type="button" onClick={() => setPickerMediaId(null)} className="text-left text-xs text-ink/45 hover:text-violet">
+                            ✕ Remover vinculo
                           </button>
                         ) : null}
                       </div>
@@ -1373,14 +1491,13 @@ export function PulsePostApp() {
                           onClose={() => setPickerOpen(false)}
                         />
                       ) : null}
-                      <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4">
-                        <div className="mb-4">
-                          <h4 className="font-medium text-ink">Adicionar nova midia neste agendamento</h4>
-                          <p className="mt-1 text-sm text-ink/55">
-                            Se voce nao selecionar uma midia existente, pode cadastrar uma nova aqui. Ao salvar, ela entra automaticamente na biblioteca.
-                          </p>
-                        </div>
-                        <div className="grid gap-4">
+
+                      {/* Inline new media upload (collapsible) */}
+                      <details className="rounded-[1.25rem] border border-violet/10 bg-violet/4">
+                        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink/70 hover:text-violet">
+                          + Subir nova midia neste agendamento
+                        </summary>
+                        <div className="grid gap-4 px-4 pb-4 pt-2">
                           <label className="grid gap-2 text-sm font-medium">
                             <span className="text-ink/75">Upload do arquivo</span>
                             <input
@@ -1396,7 +1513,6 @@ export function PulsePostApp() {
                                   setDetectedScheduleMediaInfo(null);
                                   return;
                                 }
-
                                 setScheduleFormPreview({
                                   name: file.name,
                                   type: inferMediaTypeFromFile(file),
@@ -1426,22 +1542,37 @@ export function PulsePostApp() {
                           <input type="hidden" name="manualFormat" />
                           <input type="hidden" name="manualDuration" />
                           <input type="hidden" name="manualMediaType" />
-                          <SelectField
-                            label="Status na biblioteca"
-                            name="manualStatus"
-                            options={[
-                              { label: "Ativa", value: "active" },
-                              { label: "Revisao", value: "review" },
-                              { label: "Arquivada", value: "archived" },
-                            ]}
-                          />
                         </div>
-                      </div>
+                      </details>
+
+                      {/* Networks */}
                       <CheckGrid legend="Redes">
                         {(Object.keys(networkLabels) as NetworkKey[]).map((network) => (
                           <CheckCard key={network} name="networks" value={network} label={networkLabels[network]} />
                         ))}
                       </CheckGrid>
+
+                      {/* Story notification banner */}
+                      {scheduleContentType === "story" && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                          <p className="font-medium">Agendamento de Story</p>
+                          <p className="mt-1 text-xs text-amber-600">
+                            Stories nao podem ser publicados automaticamente. Ao agendar um Story, voce recebera uma notificacao no horario marcado para publicar manualmente.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Ad-specific notice */}
+                      {scheduleContentType === "ad" && (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                          <p className="font-medium">Conteudo patrocinado</p>
+                          <p className="mt-1 text-xs text-rose-600">
+                            Anuncios serao separados das metricas organicas no score e analytics.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Schedule + repost rule */}
                       <div className="grid gap-4 md:grid-cols-2">
                         <Field label="Data e hora" name="scheduledFor" type="datetime-local" />
                         <SelectField
@@ -1453,7 +1584,19 @@ export function PulsePostApp() {
                           ]}
                         />
                       </div>
-                      <Field label="Legenda base" name="caption" placeholder="Legenda adaptavel por rede" />
+
+                      {/* Caption */}
+                      <label className="grid gap-2 text-sm font-medium">
+                        <span className="text-ink/75">Legenda</span>
+                        <textarea
+                          name="caption"
+                          rows={3}
+                          placeholder="Escreva a legenda aqui... Use #hashtags e @mencoes"
+                          className="rounded-2xl border border-violet/12 bg-white px-4 py-3 text-sm outline-none transition focus:border-violet"
+                        />
+                      </label>
+
+                      {/* WoopSocial */}
                       <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4">
                         <SelectField
                           label="Publicacao via WoopSocial"
@@ -1467,54 +1610,70 @@ export function PulsePostApp() {
                         <p className="mt-2 text-xs text-ink/55">
                           {woopStatus?.configured
                             ? woopStatus.r2Configured
-                              ? "O arquivo anexado e enviado ao Cloudflare R2 e publicado via WoopSocial. Voce tambem pode publicar agendamentos existentes pela fila ao lado."
-                              : "Anexe o arquivo de midia acima. (R2 nao configurado: o arquivo sera enviado direto, sem armazenamento permanente.)"
-                            : "Integracao WoopSocial nao configurada. Defina WOOPSOCIAL_API_KEY no servidor."}
+                              ? "O arquivo e enviado ao R2 e publicado via WoopSocial."
+                              : "R2 nao configurado: arquivo enviado direto."
+                            : "WoopSocial nao configurada. Defina WOOPSOCIAL_API_KEY."}
                         </p>
                       </div>
                       <PrimaryButton label={publishingSchedule ? "Enviando..." : "Salvar agendamento"} />
                     </FormGrid>
                   </Card>
 
-                  <Card title="Fila programada" description="Timeline clara dos proximos disparos.">
+                  <Card title="Fila programada" description="Timeline dos proximos disparos.">
                     <div className="grid gap-3">
+                      {data.schedules.length === 0 && (
+                        <p className="rounded-2xl border border-dashed border-violet/15 px-6 py-10 text-center text-sm text-ink/40">Nenhum agendamento criado ainda.</p>
+                      )}
                       {[...data.schedules]
                         .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
                         .map((schedule) => (
-                          <article key={schedule.id} className="rounded-[1.25rem] border border-violet/10 p-4">
+                          <article key={schedule.id} className="rounded-[1.25rem] border border-violet/10 bg-white p-4 transition hover:border-violet/20">
                             <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <h3 className="font-medium">{schedule.title}</h3>
-                                <p className="mt-1 text-sm text-ink/55">{formatNetworkList(schedule.networks)}</p>
+                              <div className="min-w-0 flex-1">
+                                <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                                  {schedule.contentType && (
+                                    <span className={classNames("rounded-full px-2 py-0.5 text-[10px] font-bold", contentTypeColors[schedule.contentType])}>
+                                      {contentTypeLabels[schedule.contentType]}
+                                    </span>
+                                  )}
+                                  {schedule.storyNotification && (
+                                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">Notificacao</span>
+                                  )}
+                                </div>
+                                <h3 className="font-medium text-ink">{schedule.title}</h3>
+                                <p className="mt-0.5 text-xs text-ink/45">{formatNetworkList(schedule.networks)}</p>
                               </div>
-                              <span className="text-sm text-violet">{formatDate(schedule.scheduledFor)}</span>
+                              <div className="text-right">
+                                <span className="text-sm font-medium text-violet">{formatDate(schedule.scheduledFor)}</span>
+                              </div>
                             </div>
-                            <p className="mt-3 text-sm text-ink/60">Midia: {getLinkedMediaTitle(schedule.mediaId)}</p>
-                            <p className="mt-1 text-sm text-ink/60">{schedule.caption}</p>
-                            <div className="mt-3 flex flex-wrap items-center gap-3">
+                            <p className="mt-2 text-xs text-ink/50">Midia: {getLinkedMediaTitle(schedule.mediaId)}</p>
+                            {schedule.caption && <p className="mt-1 line-clamp-2 text-xs text-ink/45">{schedule.caption}</p>}
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
                               {schedule.woopStatus ? (
                                 <span
                                   className={classNames(
-                                    "inline-flex rounded-full px-3 py-1 text-xs",
-                                    schedule.woopStatus === "error"
-                                      ? "bg-rose-100 text-rose-700"
-                                      : "bg-emerald-100 text-emerald-700",
+                                    "inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-bold",
+                                    schedule.woopStatus === "error" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700",
                                   )}
                                 >
                                   {schedule.woopStatus === "error"
-                                    ? "Falha na WoopSocial"
+                                    ? "Falha"
                                     : schedule.woopStatus === "DRAFT"
-                                      ? "Rascunho na WoopSocial"
+                                      ? "Rascunho"
                                       : schedule.woopStatus === "PUBLISHED"
-                                        ? "Publicado na WoopSocial"
-                                        : "Agendado na WoopSocial"}
+                                        ? "Publicado"
+                                        : "Agendado"}
                                 </span>
                               ) : null}
                               {scheduleHasStoredMedia(schedule) && woopStatus?.configured ? (
-                                <SecondaryButton
-                                  label={publishingSchedule ? "Enviando..." : "Publicar na WoopSocial"}
+                                <button
+                                  type="button"
                                   onClick={() => publishExistingSchedule(schedule)}
-                                />
+                                  className="rounded-full bg-violet/8 px-3 py-1 text-[11px] font-medium text-violet transition hover:bg-violet/15"
+                                >
+                                  {publishingSchedule ? "Enviando..." : "Publicar"}
+                                </button>
                               ) : null}
                             </div>
                           </article>
