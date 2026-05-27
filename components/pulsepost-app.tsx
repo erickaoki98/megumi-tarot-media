@@ -2146,9 +2146,13 @@ export function PulsePostApp() {
 
               {activeView === "insights" ? (
                 <section className="grid gap-5">
+                  {/* Local analytics — from library data */}
+                  <InsightsLocalView data={data} />
+
+                  {/* WoopSocial-powered insights */}
                   <Card
-                    title="Pontuacao de engajamento"
-                    description="Puxamos os posts das contas conectadas na WoopSocial e calculamos uma nota de engajamento (0-100) por post, ponderando interacoes pelo alcance."
+                    title="Dados da WoopSocial"
+                    description="Engajamento real puxado das contas conectadas."
                   >
                     <div className="mb-5 flex flex-wrap items-center gap-3">
                       <button
@@ -2176,7 +2180,7 @@ export function PulsePostApp() {
 
                         {!insights.metricsAvailable ? (
                           <div className="rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
-                            Os posts foram puxados, mas a WoopSocial ainda nao retornou metricas de engajamento (curtidas, comentarios, alcance) para estas contas. Assim que as metricas estiverem disponiveis, as notas aparecem aqui automaticamente.
+                            Os posts foram puxados, mas a WoopSocial ainda nao retornou metricas de engajamento para estas contas.
                           </div>
                         ) : null}
 
@@ -2239,7 +2243,7 @@ export function PulsePostApp() {
                       </div>
                     ) : !insightsLoading ? (
                       <div className="rounded-[1.25rem] border border-dashed border-violet/20 bg-violet/4 px-4 py-8 text-center text-sm text-ink/55">
-                        Clique em <strong>Atualizar dados dos posts</strong> para puxar o engajamento das contas conectadas.
+                        Clique em <strong>Atualizar dados dos posts</strong> para puxar o engajamento.
                       </div>
                     ) : null}
                   </Card>
@@ -2785,6 +2789,152 @@ function CalendarView({
         ))}
       </div>
     </section>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Insights Local View — Analytics from local library data
+// ═══════════════════════════════════════════════════════════════════════
+
+function InsightsLocalView({ data }: { data: PersistedState }) {
+  const organicMedia = data.mediaLibrary.filter((m) => m.contentType !== "ad" && !m.isAd && !m.isViral && m.status !== "archived");
+  const adMedia = data.mediaLibrary.filter((m) => m.contentType === "ad" || m.isAd);
+  const viralMedia = data.mediaLibrary.filter((m) => m.isViral && m.contentType !== "ad");
+
+  const organicScore = organicMedia.length
+    ? Math.round(organicMedia.reduce((sum, m) => sum + (m.compositeScore ?? 0), 0) / organicMedia.length)
+    : 0;
+  const adScore = adMedia.length
+    ? Math.round(adMedia.reduce((sum, m) => sum + (m.compositeScore ?? 0), 0) / adMedia.length)
+    : 0;
+
+  const totalViews = data.mediaLibrary.reduce((sum, m) => {
+    return sum + Object.values(m.stats).reduce((s, n) => s + n.views, 0);
+  }, 0);
+
+  // Per-network aggregate
+  const networkAgg = (Object.keys(networkLabels) as NetworkKey[]).map((net) => {
+    const items = organicMedia.filter((m) => m.stats[net].views > 0);
+    const avgScore = items.length ? Math.round(items.reduce((s, m) => s + m.stats[net].score, 0) / items.length) : 0;
+    const totalNetViews = items.reduce((s, m) => s + m.stats[net].views, 0);
+    const avgEng = items.length ? +(items.reduce((s, m) => s + m.stats[net].engagement, 0) / items.length).toFixed(1) : 0;
+    return { net, items: items.length, avgScore, totalNetViews, avgEng };
+  });
+
+  // Score distribution for bar chart
+  const scoreRanges = [
+    { label: "0-20", min: 0, max: 20, color: "bg-rose-400" },
+    { label: "21-40", min: 21, max: 40, color: "bg-rose-300" },
+    { label: "41-60", min: 41, max: 60, color: "bg-amber-400" },
+    { label: "61-80", min: 61, max: 80, color: "bg-emerald-400" },
+    { label: "81-100", min: 81, max: 100, color: "bg-emerald-500" },
+  ];
+  const scoreDist = scoreRanges.map((range) => ({
+    ...range,
+    count: organicMedia.filter((m) => (m.compositeScore ?? 0) >= range.min && (m.compositeScore ?? 0) <= range.max).length,
+  }));
+  const maxDist = Math.max(...scoreDist.map((d) => d.count), 1);
+
+  // Content type breakdown
+  const ctBreakdown = (Object.entries(contentTypeLabels) as [ContentType, string][]).map(([ct, label]) => ({
+    ct,
+    label,
+    count: data.mediaLibrary.filter((m) => m.contentType === ct).length,
+  }));
+  const maxCt = Math.max(...ctBreakdown.map((d) => d.count), 1);
+
+  return (
+    <>
+      {/* Score overview cards */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-[1.25rem] border border-violet/10 bg-white p-4">
+          <p className="text-xs font-medium text-ink/45">Score organico medio</p>
+          <p className={classNames("mt-1 text-2xl font-bold", organicScore >= 70 ? "text-emerald-600" : organicScore >= 40 ? "text-amber-600" : "text-rose-500")}>{organicScore}</p>
+          <p className="mt-0.5 text-[10px] text-ink/35">{organicMedia.length} midias organicas</p>
+        </div>
+        <div className="rounded-[1.25rem] border border-violet/10 bg-white p-4">
+          <p className="text-xs font-medium text-ink/45">Score anuncios medio</p>
+          <p className="mt-1 text-2xl font-bold text-rose-500">{adScore || "—"}</p>
+          <p className="mt-0.5 text-[10px] text-ink/35">{adMedia.length} anuncios</p>
+        </div>
+        <div className="rounded-[1.25rem] border border-violet/10 bg-white p-4">
+          <p className="text-xs font-medium text-ink/45">Total de views</p>
+          <p className="mt-1 text-2xl font-bold text-violet">{totalViews >= 1000 ? `${(totalViews / 1000).toFixed(1)}k` : totalViews}</p>
+          <p className="mt-0.5 text-[10px] text-ink/35">Todas as redes</p>
+        </div>
+        <div className="rounded-[1.25rem] border border-violet/10 bg-white p-4">
+          <p className="text-xs font-medium text-ink/45">Virais detectados</p>
+          <p className="mt-1 text-2xl font-bold text-violet">{viralMedia.length}</p>
+          <p className="mt-0.5 text-[10px] text-ink/35">Separados do score organico</p>
+        </div>
+      </div>
+
+      {/* Charts row */}
+      <div className="grid gap-5 lg:grid-cols-2">
+        {/* Score distribution chart */}
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5">
+          <h3 className="mb-4 font-display text-lg">Distribuicao de scores</h3>
+          <div className="flex items-end gap-2" style={{ height: 120 }}>
+            {scoreDist.map((d) => (
+              <div key={d.label} className="flex flex-1 flex-col items-center gap-1">
+                <span className="text-[10px] font-bold text-ink/50">{d.count}</span>
+                <div
+                  className={classNames("w-full rounded-t-md transition-all", d.color)}
+                  style={{ height: `${(d.count / maxDist) * 100}%`, minHeight: d.count > 0 ? 8 : 2 }}
+                />
+                <span className="text-[9px] text-ink/40">{d.label}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Content type breakdown */}
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5">
+          <h3 className="mb-4 font-display text-lg">Por tipo de conteudo</h3>
+          <div className="grid gap-3">
+            {ctBreakdown.map((d) => (
+              <div key={d.ct} className="flex items-center gap-3">
+                <span className={classNames("w-16 rounded-full px-2 py-0.5 text-center text-[10px] font-bold", contentTypeColors[d.ct])}>{d.label}</span>
+                <div className="flex-1">
+                  <div className="h-5 overflow-hidden rounded-full bg-violet/6">
+                    <div
+                      className={classNames("h-full rounded-full transition-all", contentTypeColors[d.ct])}
+                      style={{ width: `${(d.count / maxCt) * 100}%`, minWidth: d.count > 0 ? 16 : 0 }}
+                    />
+                  </div>
+                </div>
+                <span className="w-8 text-right text-xs font-bold text-ink/50">{d.count}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      {/* Per-network performance */}
+      <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5">
+        <h3 className="mb-4 font-display text-lg">Performance por rede (organico)</h3>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {networkAgg.map((row) => (
+            <div key={row.net} className="rounded-xl border border-violet/8 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-ink">{networkLabels[row.net]}</span>
+                <span className={classNames(
+                  "rounded-full px-2 py-0.5 text-[10px] font-bold",
+                  row.avgScore >= 70 ? "bg-emerald-100 text-emerald-700" : row.avgScore >= 40 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-600",
+                )}>
+                  {row.avgScore}
+                </span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 text-[10px] text-ink/50">
+                <span>{row.items} midia(s)</span>
+                <span>{row.totalNetViews >= 1000 ? `${(row.totalNetViews / 1000).toFixed(1)}k` : row.totalNetViews} views</span>
+                <span>{row.avgEng}% eng.</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </>
   );
 }
 
