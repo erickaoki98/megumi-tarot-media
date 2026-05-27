@@ -197,15 +197,22 @@ export async function uploadMediaBlob(blob: Blob, projectId: string): Promise<{ 
   return { id };
 }
 
-type SocialAccountTarget = { socialAccountId: string; platform: WoopPlatform; isImage: boolean; title: string };
+type SocialAccountTarget = {
+  socialAccountId: string;
+  platform: WoopPlatform;
+  isImage: boolean;
+  title: string;
+  format?: string;
+};
 
-function buildSocialAccountInput({ socialAccountId, platform, isImage, title }: SocialAccountTarget): Record<string, unknown> {
+function buildSocialAccountInput({ socialAccountId, platform, isImage, title, format }: SocialAccountTarget): Record<string, unknown> {
   const base: Record<string, unknown> = { platform, socialAccountId };
+  const isStory = format?.toLowerCase() === "story";
   switch (platform) {
     case "INSTAGRAM":
-      return { ...base, postType: isImage ? "POST" : "REEL" };
+      return { ...base, postType: isStory ? "STORY" : isImage ? "POST" : "REEL" };
     case "FACEBOOK":
-      return { ...base, postType: isImage ? "POST" : "REEL" };
+      return { ...base, postType: isStory ? "STORY" : isImage ? "POST" : "REEL" };
     case "YOUTUBE":
       return { ...base, title: title || "Post", privacy: "public" };
     case "TIKTOK":
@@ -222,6 +229,7 @@ export type CreatePostParams = {
   mediaId: string | null;
   isImage: boolean;
   schedule: boolean;
+  format?: string;
   accounts: { socialAccountId: string; platform: WoopPlatform }[];
 };
 
@@ -251,6 +259,7 @@ export async function createPost(params: CreatePostParams): Promise<WoopPost> {
         platform: account.platform,
         isImage: params.isImage,
         title: params.title,
+        format: params.format,
       }),
     ),
   };

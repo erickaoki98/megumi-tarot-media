@@ -22,6 +22,7 @@ import {
   ScheduleItem,
   ViewKey,
 } from "@/types/app";
+import { MediaPicker, MediaPickerTrigger } from "@/components/media-picker";
 
 type FiltersState = {
   mediaStatus: "all" | MediaStatus;
@@ -161,6 +162,89 @@ function normalizeWoopStatus(status: unknown): NonNullable<ScheduleItem["woopSta
 
 const numberFmt = new Intl.NumberFormat("pt-BR");
 
+function stripExtension(name: string): string {
+  return name.replace(/\.[^./\\]+$/, "");
+}
+
+function formatDurationSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "";
+  }
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function setFormFieldValue(
+  form: HTMLFormElement | null,
+  name: string,
+  value: string,
+  onlyIfEmpty = false,
+) {
+  if (!form) {
+    return;
+  }
+  const element = form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null;
+  if (!element) {
+    return;
+  }
+  if (onlyIfEmpty && element.value.trim()) {
+    return;
+  }
+  element.value = value;
+}
+
+// Auto-fills a media form from the chosen file: suggests title/filename/type and
+// reads the real video duration from metadata. Title is only suggested when empty.
+// onDetect callback receives { duration, format } for display purposes.
+// fieldNames allows overriding the form field names (used by the scheduler form).
+function prefillMediaFormFromFile(
+  file: File,
+  form: HTMLFormElement | null,
+  onDetect?: (info: { duration: string; format: string }) => void,
+  fieldNames?: { fileName?: string; title?: string; type?: string; duration?: string; format?: string },
+) {
+  const fn = (name: string) => fieldNames?.[name as keyof typeof fieldNames] ?? name;
+  const type = inferMediaTypeFromFile(file);
+  setFormFieldValue(form, fn("fileName"), file.name);
+  setFormFieldValue(form, fn("title"), stripExtension(file.name), true);
+  setFormFieldValue(form, fn("type"), type);
+
+  if (type === "image") {
+    setFormFieldValue(form, fn("duration"), "Imagem");
+    setFormFieldValue(form, fn("format"), "Feed");
+    onDetect?.({ duration: "Imagem", format: "Feed" });
+    return;
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  const probe = document.createElement("video");
+  probe.preload = "metadata";
+  const finish = (seconds: number) => {
+    const duration = formatDurationSeconds(seconds);
+    const format = seconds < 15 ? "Story" : "Reel";
+    setFormFieldValue(form, fn("duration"), duration);
+    setFormFieldValue(form, fn("format"), format);
+    onDetect?.({ duration, format });
+    URL.revokeObjectURL(objectUrl);
+  };
+  probe.onloadedmetadata = () => {
+    // Some containers (e.g. MediaRecorder webm) report Infinity until seeked.
+    if (probe.duration === Infinity || Number.isNaN(probe.duration)) {
+      probe.ontimeupdate = () => {
+        probe.ontimeupdate = null;
+        finish(probe.duration);
+      };
+      probe.currentTime = 1e101;
+      return;
+    }
+    finish(probe.duration);
+  };
+  probe.onerror = () => URL.revokeObjectURL(objectUrl);
+  probe.src = objectUrl;
+}
+
 function buildMediaItem(params: {
   id: string;
   title: string;
@@ -204,6 +288,8 @@ export function PulsePostApp() {
   const [ephemeralMediaPreviews, setEphemeralMediaPreviews] = useState<Record<string, DraftPreviewState>>({});
   const [mediaFormKey, setMediaFormKey] = useState(0);
   const [scheduleFormKey, setScheduleFormKey] = useState(0);
+  const [detectedMediaInfo, setDetectedMediaInfo] = useState<{ duration: string; format: string } | null>(null);
+  const [detectedScheduleMediaInfo, setDetectedScheduleMediaInfo] = useState<{ duration: string; format: string } | null>(null);
   const [woopStatus, setWoopStatus] = useState<WoopClientStatus | null>(null);
   const [publishingSchedule, setPublishingSchedule] = useState(false);
   const [connectingNetwork, setConnectingNetwork] = useState<NetworkKey | null>(null);
@@ -216,6 +302,8 @@ export function PulsePostApp() {
   const [dailyPlan, setDailyPlan] = useState<DailyPlan | null>(null);
   const [planUseAi, setPlanUseAi] = useState(false);
   const [applyingPlan, setApplyingPlan] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerMediaId, setPickerMediaId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -521,12 +609,12 @@ export function PulsePostApp() {
 
     const nextItem = buildMediaItem({
       id: nextItemId,
-      title: String(formData.get("title") ?? "").trim(),
+      title: String(formData.get("title") ?? "").trim() || stripExtension(fileName),
       type: inferredType ?? (String(formData.get("type") ?? "video") as MediaItem["type"]),
       format: String(formData.get("format") ?? "").trim(),
       duration: String(formData.get("duration") ?? "").trim() || (inferredType === "image" ? "Imagem" : "00:00"),
       status: String(formData.get("status") ?? "active") as MediaStatus,
-      category: String(formData.get("category") ?? "").trim(),
+      category: "Geral",
       fileName,
       url: storedUrl,
     });
@@ -543,6 +631,7 @@ export function PulsePostApp() {
       storedUrl ? "Midia enviada para o R2 e adicionada na biblioteca." : "Midia adicionada na biblioteca.",
     );
     setMediaFormPreview(null);
+    setDetectedMediaInfo(null);
     setMediaFormKey((current) => current + 1);
   }
 
@@ -638,6 +727,8 @@ export function PulsePostApp() {
     const baseState = { ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules] };
     persist(baseState, "Agendamento criado.");
     setScheduleFormPreview(null);
+    setDetectedScheduleMediaInfo(null);
+    setPickerMediaId(null);
 
     if (woopMode !== "off") {
       if (!resolvedMediaUrl && !uploadedFile) {
@@ -655,6 +746,10 @@ export function PulsePostApp() {
           publishForm.set("file", uploadedFile);
         }
         networks.forEach((network) => publishForm.append("networks", network));
+        const resolvedFormat = mediaId
+          ? data.mediaLibrary.find((item) => item.id === mediaId)?.format ?? manualFormat
+          : manualFormat;
+        if (resolvedFormat) publishForm.set("mediaFormat", resolvedFormat);
 
         try {
           const response = await fetch("/api/social/publish", { method: "POST", body: publishForm });
@@ -704,6 +799,7 @@ export function PulsePostApp() {
     publishForm.set("mode", mode);
     publishForm.set("mediaUrl", media.url);
     publishForm.set("mediaType", media.type);
+    if (media.format) publishForm.set("mediaFormat", media.format);
     schedule.networks.forEach((network) => publishForm.append("networks", network));
 
     try {
@@ -1055,6 +1151,7 @@ export function PulsePostApp() {
                           className="rounded-2xl border border-violet/12 bg-violet/5 px-4 py-3 text-sm outline-none transition file:mr-4 file:rounded-full file:border-0 file:bg-violet file:px-4 file:py-2 file:text-white focus:border-violet focus:bg-white"
                           onChange={(event) => {
                             const file = event.currentTarget.files?.[0];
+                            const form = event.currentTarget.form;
                             if (!file) {
                               setMediaFormPreview(null);
                               return;
@@ -1065,27 +1162,28 @@ export function PulsePostApp() {
                               type: inferMediaTypeFromFile(file),
                               url: URL.createObjectURL(file),
                             });
+                            prefillMediaFormFromFile(file, form, setDetectedMediaInfo);
                           }}
                         />
                       </label>
                       <AssetPreview preview={mediaFormPreview} title="Preview da nova midia" />
+                      {detectedMediaInfo && (
+                        <p className="rounded-xl bg-violet/8 px-4 py-2 text-sm text-ink/70">
+                          Duracao: <span className="font-medium text-ink">{detectedMediaInfo.duration}</span> · Formato: <span className="font-medium text-ink">{detectedMediaInfo.format}</span>
+                        </p>
+                      )}
+                      <Field label="Arquivo (opcional se houver upload)" name="fileName" placeholder="video.mp4" required={false} />
+                      <input type="hidden" name="duration" />
+                      <input type="hidden" name="format" />
+                      <SelectField
+                        label="Tipo"
+                        name="type"
+                        options={[
+                          { label: "Video", value: "video" },
+                          { label: "Imagem", value: "image" },
+                        ]}
+                      />
                       <div className="grid gap-4 md:grid-cols-2">
-                        <Field label="Arquivo (opcional se houver upload)" name="fileName" placeholder="video.mp4" required={false} />
-                        <Field label="Categoria" name="category" placeholder="Campanha" />
-                      </div>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <SelectField
-                          label="Tipo"
-                          name="type"
-                          options={[
-                            { label: "Video", value: "video" },
-                            { label: "Imagem", value: "image" },
-                          ]}
-                        />
-                        <Field label="Formato" name="format" placeholder="Reel / Story" />
-                      </div>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <Field label="Duracao" name="duration" placeholder="00:30 ou Imagem" />
                         <SelectField
                           label="Status"
                           name="status"
@@ -1200,14 +1298,31 @@ export function PulsePostApp() {
                   <Card title="Novo agendamento" description="Programe uma postagem para varias redes ao mesmo tempo.">
                     <FormGrid key={scheduleFormKey} action={handleCreateSchedule}>
                       <Field label="Titulo interno" name="title" placeholder="Lote de domingo" />
-                      <SelectField
-                        label="Midia"
-                        name="mediaId"
-                        options={[
-                          { label: "Sem vinculo", value: "" },
-                          ...data.mediaLibrary.map((item) => ({ label: item.title, value: item.id })),
-                        ]}
-                      />
+                      <div className="grid gap-2 text-sm font-medium">
+                        <span className="text-ink/75">Mídia</span>
+                        <input type="hidden" name="mediaId" value={pickerMediaId ?? ""} />
+                        <MediaPickerTrigger
+                          label={pickerMediaId ? (data.mediaLibrary.find((m) => m.id === pickerMediaId)?.title ?? "Mídia selecionada") : "Escolher da biblioteca…"}
+                          onClick={() => setPickerOpen(true)}
+                        />
+                        {pickerMediaId ? (
+                          <button
+                            type="button"
+                            onClick={() => setPickerMediaId(null)}
+                            className="text-left text-xs text-ink/45 hover:text-violet"
+                          >
+                            ✕ Remover vínculo
+                          </button>
+                        ) : null}
+                      </div>
+                      {pickerOpen ? (
+                        <MediaPicker
+                          library={data.mediaLibrary}
+                          selectedId={pickerMediaId}
+                          onSelect={setPickerMediaId}
+                          onClose={() => setPickerOpen(false)}
+                        />
+                      ) : null}
                       <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4">
                         <div className="mb-4">
                           <h4 className="font-medium text-ink">Adicionar nova midia neste agendamento</h4>
@@ -1225,8 +1340,10 @@ export function PulsePostApp() {
                               className="rounded-2xl border border-violet/12 bg-white px-4 py-3 text-sm outline-none transition file:mr-4 file:rounded-full file:border-0 file:bg-violet file:px-4 file:py-2 file:text-white focus:border-violet"
                               onChange={(event) => {
                                 const file = event.currentTarget.files?.[0];
+                                const form = event.currentTarget.form;
                                 if (!file) {
                                   setScheduleFormPreview(null);
+                                  setDetectedScheduleMediaInfo(null);
                                   return;
                                 }
 
@@ -1235,38 +1352,39 @@ export function PulsePostApp() {
                                   type: inferMediaTypeFromFile(file),
                                   url: URL.createObjectURL(file),
                                 });
+                                prefillMediaFormFromFile(file, form, setDetectedScheduleMediaInfo, {
+                                  fileName: "manualFileName",
+                                  title: "manualMediaTitle",
+                                  type: "manualMediaType",
+                                  duration: "manualDuration",
+                                  format: "manualFormat",
+                                });
                               }}
                             />
                           </label>
                           <AssetPreview preview={scheduleFormPreview} title="Preview da nova midia do agendamento" />
+                          {detectedScheduleMediaInfo && (
+                            <p className="rounded-xl bg-violet/8 px-4 py-2 text-sm text-ink/70">
+                              Duracao: <span className="font-medium text-ink">{detectedScheduleMediaInfo.duration}</span> · Formato: <span className="font-medium text-ink">{detectedScheduleMediaInfo.format}</span>
+                            </p>
+                          )}
                           <Field label="Titulo da nova midia" name="manualMediaTitle" placeholder="Ex: video exclusivo do post" required={false} />
                           <div className="grid gap-4 md:grid-cols-2">
                             <Field label="Arquivo (opcional se houver upload)" name="manualFileName" placeholder="video-curto.mp4" required={false} />
                             <Field label="Categoria" name="manualCategory" placeholder="Agendamento manual" required={false} />
                           </div>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            <SelectField
-                              label="Tipo"
-                              name="manualMediaType"
-                              options={[
-                                { label: "Video", value: "video" },
-                                { label: "Imagem", value: "image" },
-                              ]}
-                            />
-                            <Field label="Formato" name="manualFormat" placeholder="Short / Reel / Feed" required={false} />
-                          </div>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            <Field label="Duracao" name="manualDuration" placeholder="00:30 ou Imagem" required={false} />
-                            <SelectField
-                              label="Status na biblioteca"
-                              name="manualStatus"
-                              options={[
-                                { label: "Ativa", value: "active" },
-                                { label: "Revisao", value: "review" },
-                                { label: "Arquivada", value: "archived" },
-                              ]}
-                            />
-                          </div>
+                          <input type="hidden" name="manualFormat" />
+                          <input type="hidden" name="manualDuration" />
+                          <input type="hidden" name="manualMediaType" />
+                          <SelectField
+                            label="Status na biblioteca"
+                            name="manualStatus"
+                            options={[
+                              { label: "Ativa", value: "active" },
+                              { label: "Revisao", value: "review" },
+                              { label: "Arquivada", value: "archived" },
+                            ]}
+                          />
                         </div>
                       </div>
                       <CheckGrid legend="Redes">
