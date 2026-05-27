@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { networkLabels, seedState, SESSION_STORAGE_KEY, STORAGE_KEY } from "@/lib/constants";
+import { networkLabels, seedState, SESSION_STORAGE_KEY, STORAGE_KEY, inferContentType, contentTypeLabels, contentTypeColors } from "@/lib/constants";
 import { classNames, formatDate, formatNetworkList, getMediaHealth } from "@/lib/utils";
 import {
   assessRepost,
@@ -13,6 +13,8 @@ import {
 } from "@/lib/repost-engine";
 import {
   AppUser,
+  Competitor,
+  ContentType,
   FlashState,
   MediaItem,
   MediaStatus,
@@ -20,6 +22,8 @@ import {
   PersistedState,
   RepostRule,
   ScheduleItem,
+  Script,
+  ScriptStatus,
   ViewKey,
 } from "@/types/app";
 import { MediaPicker, MediaPickerTrigger } from "@/components/media-picker";
@@ -125,13 +129,35 @@ function loadState(): PersistedState {
   }
 }
 
+function computeCompositeScore(stats: Record<string, { score: number }>): number {
+  const scores = Object.values(stats).map((s) => s.score).filter((s) => s > 0);
+  return scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+}
+
 function normalizeState(raw: Partial<PersistedState>): PersistedState {
+  // Migrate media items — add numericId, contentType, compositeScore
+  let nextNumericId = typeof raw.nextMediaNumericId === "number" ? raw.nextMediaNumericId : 1;
+  const mediaLibrary = (Array.isArray(raw.mediaLibrary) && raw.mediaLibrary.length ? raw.mediaLibrary : seedState.mediaLibrary).map((item) => {
+    const numericId = item.numericId ?? nextNumericId++;
+    const contentType = item.contentType ?? inferContentType(item.format ?? "", item.isAd);
+    const compositeScore = item.compositeScore ?? computeCompositeScore(item.stats ?? {});
+    return { ...item, numericId, contentType, compositeScore };
+  });
+
   return {
     users: Array.isArray(raw.users) && raw.users.length ? raw.users : seedState.users,
-    mediaLibrary: Array.isArray(raw.mediaLibrary) && raw.mediaLibrary.length ? raw.mediaLibrary : seedState.mediaLibrary,
+    mediaLibrary,
     schedules: Array.isArray(raw.schedules) ? raw.schedules : seedState.schedules,
     repostRules: Array.isArray(raw.repostRules) ? raw.repostRules : seedState.repostRules,
     audit: Array.isArray(raw.audit) ? raw.audit : seedState.audit,
+    scripts: Array.isArray(raw.scripts) ? raw.scripts : [],
+    recordingQueue: Array.isArray(raw.recordingQueue) ? raw.recordingQueue : [],
+    captions: Array.isArray(raw.captions) ? raw.captions : [],
+    competitors: Array.isArray(raw.competitors) ? raw.competitors : [],
+    competitorSnapshots: Array.isArray(raw.competitorSnapshots) ? raw.competitorSnapshots : [],
+    dailySnapshots: Array.isArray(raw.dailySnapshots) ? raw.dailySnapshots : [],
+    nextMediaNumericId: nextNumericId,
+    nextScriptNumericId: typeof raw.nextScriptNumericId === "number" ? raw.nextScriptNumericId : 1,
   };
 }
 
@@ -279,7 +305,7 @@ function buildMediaItem(params: {
 export function PulsePostApp() {
   const [data, setData] = useState<PersistedState>(seedState);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<ViewKey>("scheduler");
+  const [activeView, setActiveView] = useState<ViewKey>("dashboard");
   const [filters, setFilters] = useState<FiltersState>(defaultFilters);
   const [flash, setFlash] = useState<FlashState>(null);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
@@ -1101,10 +1127,14 @@ export function PulsePostApp() {
           <div className="border-b border-violet/10 px-5 py-4 md:px-8">
             <nav className="flex flex-wrap gap-2">
                 {[
+                  { key: "dashboard", label: "Dashboard" },
                   { key: "library", label: "Biblioteca" },
+                  { key: "calendar", label: "Calendario" },
                   { key: "scheduler", label: "Agendamentos" },
+                  { key: "scripts", label: "Roteiros" },
                   { key: "plan", label: "Plano do dia" },
                   { key: "insights", label: "Engajamento" },
+                  { key: "competitors", label: "Concorrentes" },
                   { key: "reposts", label: "Repostagem" },
                   { key: "users", label: "Usuarios" },
                   { key: "config", label: "Config" },
@@ -1136,6 +1166,26 @@ export function PulsePostApp() {
                 actionLabel={viewMeta[activeView].actionLabel}
                 onAction={viewMeta[activeView].onAction(setActiveView)}
               />
+
+              {/* ── Dashboard ── */}
+              {activeView === "dashboard" ? (
+                <DashboardView data={data} setActiveView={setActiveView} />
+              ) : null}
+
+              {/* ── Calendar ── */}
+              {activeView === "calendar" ? (
+                <CalendarView schedules={data.schedules} mediaLibrary={data.mediaLibrary} setActiveView={setActiveView} />
+              ) : null}
+
+              {/* ── Scripts ── */}
+              {activeView === "scripts" ? (
+                <ScriptsView data={data} persist={persist} />
+              ) : null}
+
+              {/* ── Competitors ── */}
+              {activeView === "competitors" ? (
+                <CompetitorsView data={data} persist={persist} />
+              ) : null}
 
               {activeView === "library" ? (
                 <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
@@ -2094,13 +2144,41 @@ const viewMeta: Record<
     actionLabel: "Ir para agendamentos",
     onAction: (setActiveView) => () => setActiveView("scheduler"),
   },
+  dashboard: {
+    title: "Dashboard",
+    description: "Visao geral de desempenho: comparativo diario de views e engajamento.",
+    actionLabel: "Ver biblioteca",
+    onAction: (setActiveView) => () => setActiveView("library"),
+  },
+  calendar: {
+    title: "Calendario",
+    description: "Visualizacao mensal de todos os posts agendados.",
+    actionLabel: "Novo agendamento",
+    onAction: (setActiveView) => () => setActiveView("scheduler"),
+  },
+  scripts: {
+    title: "Roteiros",
+    description: "Roteiros de conteudo e fila de gravacao.",
+    actionLabel: "Novo roteiro",
+    onAction: () => undefined,
+  },
+  competitors: {
+    title: "Concorrentes",
+    description: "Analise comparativa diaria com perfis concorrentes.",
+    actionLabel: "Adicionar concorrente",
+    onAction: () => undefined,
+  },
 };
 
 const pageTitleMap: Record<ViewKey, string> = {
+  dashboard: "Dashboard",
   library: "Biblioteca",
+  calendar: "Calendario",
   scheduler: "Agendamentos",
+  scripts: "Roteiros",
   plan: "Plano do dia",
   insights: "Engajamento",
+  competitors: "Concorrentes",
   reposts: "Repostagem",
   users: "Usuarios",
   config: "Config",
@@ -2194,14 +2272,22 @@ function IllustrationRow({
 
 function NavIcon({ view }: { view: ViewKey }) {
   switch (view) {
+    case "dashboard":
+      return <DashboardIcon className="size-4" />;
     case "library":
       return <LibraryIcon className="size-4" />;
-    case "scheduler":
+    case "calendar":
       return <CalendarIcon className="size-4" />;
+    case "scheduler":
+      return <ClockIcon className="size-4" />;
+    case "scripts":
+      return <ScriptIcon className="size-4" />;
     case "plan":
       return <CalendarIcon className="size-4" />;
     case "insights":
       return <ChartIcon className="size-4" />;
+    case "competitors":
+      return <CompetitorsIcon className="size-4" />;
     case "reposts":
       return <CycleIcon className="size-4" />;
     case "users":
@@ -2295,6 +2381,418 @@ function ChartIcon({ className }: { className?: string }) {
       <rect x="12.5" y="8" width="3" height="9" rx="0.8" fill="currentColor" opacity="0.6" />
       <rect x="17" y="10" width="3" height="7" rx="0.8" fill="currentColor" opacity="0.45" />
     </svg>
+  );
+}
+
+function DashboardIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <rect x="3" y="3" width="8" height="8" rx="1.5" fill="currentColor" opacity="0.9" />
+      <rect x="13" y="3" width="8" height="5" rx="1.5" fill="currentColor" opacity="0.6" />
+      <rect x="3" y="13" width="8" height="5" rx="1.5" fill="currentColor" opacity="0.5" />
+      <rect x="13" y="10" width="8" height="8" rx="1.5" fill="currentColor" opacity="0.7" />
+    </svg>
+  );
+}
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" opacity="0.8" />
+      <path d="M12 7v5l3.5 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ScriptIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M6 4h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill="currentColor" opacity="0.7" />
+      <path d="M14 4v6h6" fill="currentColor" opacity="0.4" />
+      <path d="M8 13h8M8 17h5" stroke="white" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CompetitorsIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <circle cx="9" cy="8" r="3" fill="currentColor" opacity="0.8" />
+      <circle cx="16" cy="8" r="3" fill="currentColor" opacity="0.5" />
+      <path d="M3 19c0-3.3 2.7-6 6-6s6 2.7 6 6" fill="currentColor" opacity="0.6" />
+      <path d="M14 19c0-3.3 2.7-6 6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.4" />
+    </svg>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Dashboard View — Big numbers + yesterday/today comparison
+// ═══════════════════════════════════════════════════════════════════════
+
+function DashboardView({ data, setActiveView }: { data: PersistedState; setActiveView: (v: ViewKey) => void }) {
+  const totalMedia = data.mediaLibrary.length;
+  const totalScheduled = data.schedules.length;
+  const avgScore = totalMedia
+    ? Math.round(data.mediaLibrary.reduce((sum, m) => sum + (m.compositeScore ?? 0), 0) / totalMedia)
+    : 0;
+  const totalViews = data.mediaLibrary.reduce((sum, m) => {
+    return sum + Object.values(m.stats).reduce((s, n) => s + n.views, 0);
+  }, 0);
+  const totalEngagement = totalMedia
+    ? +(data.mediaLibrary.reduce((sum, m) => {
+        const vals = Object.values(m.stats).filter((n) => n.views > 0);
+        return sum + (vals.length ? vals.reduce((s, n) => s + n.engagement, 0) / vals.length : 0);
+      }, 0) / totalMedia).toFixed(1)
+    : 0;
+
+  const topContent = [...data.mediaLibrary].sort((a, b) => (b.compositeScore ?? 0) - (a.compositeScore ?? 0)).slice(0, 5);
+
+  return (
+    <section className="grid gap-5">
+      {/* Big Numbers */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <BigNumber label="Total de midias" value={totalMedia} icon="library" />
+        <BigNumber label="Agendamentos" value={totalScheduled} icon="calendar" />
+        <BigNumber label="Score medio" value={avgScore} suffix="/100" icon="chart" color={avgScore >= 60 ? "emerald" : avgScore >= 40 ? "amber" : "rose"} />
+        <BigNumber label="Views totais" value={totalViews.toLocaleString("pt-BR")} icon="eye" />
+      </div>
+
+      {/* Engagement Summary */}
+      <div className="grid gap-5 lg:grid-cols-2">
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+          <h3 className="mb-4 font-display text-lg tracking-tight">Engajamento medio</h3>
+          <div className="flex items-end gap-3">
+            <span className="font-display text-4xl tracking-tighter text-violet">{totalEngagement}%</span>
+            <span className="mb-1 text-sm text-ink/50">media entre todas as midias</span>
+          </div>
+          <div className="mt-5 grid gap-2">
+            {(Object.keys(networkLabels) as NetworkKey[]).map((network) => {
+              const networkViews = data.mediaLibrary.reduce((s, m) => s + (m.stats[network]?.views ?? 0), 0);
+              const networkAvgEng = totalMedia
+                ? +(data.mediaLibrary.reduce((s, m) => s + (m.stats[network]?.engagement ?? 0), 0) / totalMedia).toFixed(1)
+                : 0;
+              return (
+                <div key={network} className="flex items-center justify-between rounded-xl bg-violet/5 px-4 py-2.5 text-sm">
+                  <span className="font-medium text-ink/70">{networkLabels[network]}</span>
+                  <span className="text-ink/50">{networkViews.toLocaleString("pt-BR")} views · {networkAvgEng}% eng</span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Top Content */}
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="font-display text-lg tracking-tight">Top conteudos</h3>
+            <button type="button" onClick={() => setActiveView("library")} className="text-xs text-violet hover:underline">Ver tudo</button>
+          </div>
+          <div className="grid gap-2">
+            {topContent.map((item, i) => (
+              <div key={item.id} className="flex items-center gap-3 rounded-xl bg-violet/5 px-4 py-3">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet/15 text-xs font-bold text-violet">
+                  #{String(item.numericId ?? i + 1).padStart(3, "0")}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-ink">{item.title}</p>
+                  <p className="text-xs text-ink/50">{item.contentType ? contentTypeLabels[item.contentType] : item.format}</p>
+                </div>
+                <ScoreBadge score={item.compositeScore ?? 0} />
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function BigNumber({ label, value, suffix, icon, color }: { label: string; value: string | number; suffix?: string; icon: string; color?: string }) {
+  const colorClass = color === "emerald" ? "text-emerald-600" : color === "amber" ? "text-amber-600" : color === "rose" ? "text-rose-500" : "text-violet";
+  return (
+    <div className="rounded-[1.75rem] border border-violet/10 bg-white p-5">
+      <p className="text-xs font-medium uppercase tracking-wider text-ink/40">{label}</p>
+      <p className={classNames("mt-2 font-display text-3xl tracking-tighter", colorClass)}>
+        {value}{suffix && <span className="text-lg text-ink/30">{suffix}</span>}
+      </p>
+    </div>
+  );
+}
+
+function ScoreBadge({ score }: { score: number }) {
+  const bg = score >= 70 ? "bg-emerald-100 text-emerald-700" : score >= 40 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-600";
+  return <span className={classNames("rounded-full px-2.5 py-1 text-xs font-bold", bg)}>{score}</span>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Calendar View — Notion-style monthly calendar
+// ═══════════════════════════════════════════════════════════════════════
+
+function CalendarView({
+  schedules,
+  mediaLibrary,
+  setActiveView,
+}: {
+  schedules: ScheduleItem[];
+  mediaLibrary: MediaItem[];
+  setActiveView: (v: ViewKey) => void;
+}) {
+  const [viewDate, setViewDate] = useState(() => new Date());
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+
+  const firstDay = new Date(year, month, 1);
+  const startDow = firstDay.getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  // Build grid: 6 rows × 7 cols
+  const cells: (number | null)[] = [];
+  for (let i = 0; i < startDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  // Group schedules by day
+  const schedulesByDay: Record<number, ScheduleItem[]> = {};
+  for (const schedule of schedules) {
+    const d = new Date(schedule.scheduledFor);
+    if (d.getFullYear() === year && d.getMonth() === month) {
+      const day = d.getDate();
+      (schedulesByDay[day] ??= []).push(schedule);
+    }
+  }
+
+  const today = new Date();
+  const isToday = (day: number) => today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
+
+  const monthNames = ["Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+
+  return (
+    <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+      {/* Month nav */}
+      <div className="mb-5 flex items-center justify-between">
+        <button type="button" onClick={() => setViewDate(new Date(year, month - 1, 1))} className="rounded-full bg-violet/8 px-3 py-1.5 text-sm font-medium text-violet hover:bg-violet/15">← Anterior</button>
+        <h3 className="font-display text-xl tracking-tight">{monthNames[month]} {year}</h3>
+        <button type="button" onClick={() => setViewDate(new Date(year, month + 1, 1))} className="rounded-full bg-violet/8 px-3 py-1.5 text-sm font-medium text-violet hover:bg-violet/15">Proximo →</button>
+      </div>
+
+      {/* Day headers */}
+      <div className="grid grid-cols-7 gap-px text-center text-xs font-medium text-ink/40">
+        {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((d) => (
+          <div key={d} className="py-2">{d}</div>
+        ))}
+      </div>
+
+      {/* Calendar grid */}
+      <div className="grid grid-cols-7 gap-px">
+        {cells.map((day, i) => (
+          <div
+            key={i}
+            className={classNames(
+              "min-h-[5.5rem] rounded-lg border p-1.5 text-xs transition",
+              day ? "border-violet/8 bg-white hover:bg-violet/3" : "border-transparent",
+              day && isToday(day) ? "ring-2 ring-violet/30" : "",
+            )}
+          >
+            {day && (
+              <>
+                <span className={classNames("mb-1 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-bold", isToday(day) ? "bg-violet text-white" : "text-ink/50")}>{day}</span>
+                <div className="grid gap-0.5">
+                  {(schedulesByDay[day] ?? []).slice(0, 3).map((schedule) => {
+                    const media = schedule.mediaId ? mediaLibrary.find((m) => m.id === schedule.mediaId) : null;
+                    const ct = schedule.contentType ?? media?.contentType;
+                    const colorCls = ct ? contentTypeColors[ct] : "bg-violet/20 text-violet";
+                    return (
+                      <div key={schedule.id} className={classNames("truncate rounded px-1 py-0.5 text-[9px] font-medium leading-tight", colorCls)} title={schedule.title}>
+                        {new Date(schedule.scheduledFor).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} {schedule.title}
+                      </div>
+                    );
+                  })}
+                  {(schedulesByDay[day]?.length ?? 0) > 3 && (
+                    <span className="text-[9px] text-ink/40">+{(schedulesByDay[day]?.length ?? 0) - 3} mais</span>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 flex gap-3 text-[10px] text-ink/50">
+        {(Object.entries(contentTypeLabels) as [ContentType, string][]).map(([key, label]) => (
+          <span key={key} className="flex items-center gap-1">
+            <span className={classNames("inline-block size-2 rounded-full", contentTypeColors[key])} />
+            {label}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Scripts View — Roteiros & fila de gravação
+// ═══════════════════════════════════════════════════════════════════════
+
+function ScriptsView({ data, persist }: { data: PersistedState; persist: (state: PersistedState, msg?: string) => void }) {
+  const [showForm, setShowForm] = useState(false);
+
+  function handleCreateScript(formData: FormData) {
+    const title = String(formData.get("title") ?? "").trim();
+    const body = String(formData.get("body") ?? "").trim();
+    const contentType = String(formData.get("contentType") ?? "reel") as ContentType;
+    if (!title) return;
+
+    const nextId = data.nextScriptNumericId ?? 1;
+    const script: Script = {
+      id: randomId("script"),
+      numericId: nextId,
+      title,
+      body,
+      contentType,
+      status: "draft",
+      mediaId: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    persist({ ...data, scripts: [script, ...data.scripts], nextScriptNumericId: nextId + 1 }, "Roteiro criado.");
+    setShowForm(false);
+  }
+
+  function updateScriptStatus(scriptId: string, status: ScriptStatus) {
+    persist({
+      ...data,
+      scripts: data.scripts.map((s) => (s.id === scriptId ? { ...s, status, updatedAt: new Date().toISOString() } : s)),
+    });
+  }
+
+  const statusLabels: Record<ScriptStatus, string> = { draft: "Rascunho", ready: "Pronto p/ gravar", recorded: "Gravado", archived: "Arquivado" };
+  const statusColors: Record<ScriptStatus, string> = { draft: "bg-gray-100 text-gray-600", ready: "bg-amber-100 text-amber-700", recorded: "bg-emerald-100 text-emerald-700", archived: "bg-ink/10 text-ink/40" };
+
+  return (
+    <section className="grid gap-5">
+      <div className="flex items-center justify-between">
+        <button type="button" onClick={() => setShowForm(!showForm)} className="rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet/15 transition hover:bg-violet/85">
+          {showForm ? "Cancelar" : "+ Novo roteiro"}
+        </button>
+      </div>
+
+      {showForm && (
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+          <h3 className="mb-4 font-display text-lg">Novo roteiro</h3>
+          <FormGrid action={handleCreateScript}>
+            <Field label="Titulo" name="title" placeholder="Ex: Review do produto X" />
+            <SelectField label="Tipo de conteudo" name="contentType" options={[
+              { label: "Reels", value: "reel" },
+              { label: "Story", value: "story" },
+              { label: "Anuncio", value: "ad" },
+              { label: "Organico", value: "organic" },
+            ]} />
+            <label className="grid gap-2 text-sm font-medium">
+              <span className="text-ink/75">Roteiro</span>
+              <textarea name="body" rows={6} placeholder="Escreva o roteiro aqui..." className="rounded-2xl border border-violet/12 bg-white px-4 py-3 text-sm outline-none transition focus:border-violet" />
+            </label>
+            <PrimaryButton label="Salvar roteiro" />
+          </FormGrid>
+        </section>
+      )}
+
+      {/* Script list */}
+      <div className="grid gap-3">
+        {data.scripts.length === 0 && !showForm && (
+          <p className="rounded-2xl border border-dashed border-violet/15 px-6 py-10 text-center text-sm text-ink/40">Nenhum roteiro ainda. Crie o primeiro!</p>
+        )}
+        {data.scripts.map((script) => (
+          <div key={script.id} className="rounded-[1.25rem] border border-violet/10 bg-white p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="rounded-lg bg-violet/10 px-2 py-1 text-xs font-bold text-violet">#{String(script.numericId ?? 0).padStart(3, "0")}</span>
+                <span className={classNames("rounded-full px-2 py-0.5 text-[10px] font-bold", contentTypeColors[script.contentType])}>{contentTypeLabels[script.contentType]}</span>
+              </div>
+              <span className={classNames("rounded-full px-2.5 py-1 text-[10px] font-bold", statusColors[script.status])}>{statusLabels[script.status]}</span>
+            </div>
+            <h4 className="mt-2 font-medium text-ink">{script.title}</h4>
+            {script.body && <p className="mt-1 line-clamp-2 text-sm text-ink/55">{script.body}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {script.status === "draft" && <button type="button" onClick={() => updateScriptStatus(script.id, "ready")} className="rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-200">Marcar pronto</button>}
+              {script.status === "ready" && <button type="button" onClick={() => updateScriptStatus(script.id, "recorded")} className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-200">Marcar gravado</button>}
+              {script.status !== "archived" && <button type="button" onClick={() => updateScriptStatus(script.id, "archived")} className="rounded-full bg-ink/5 px-3 py-1 text-xs font-medium text-ink/40 hover:bg-ink/10">Arquivar</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Competitors View
+// ═══════════════════════════════════════════════════════════════════════
+
+function CompetitorsView({ data, persist }: { data: PersistedState; persist: (state: PersistedState, msg?: string) => void }) {
+  const [showForm, setShowForm] = useState(false);
+
+  function handleAddCompetitor(formData: FormData) {
+    const name = String(formData.get("name") ?? "").trim();
+    const handle = String(formData.get("handle") ?? "").trim();
+    const platform = String(formData.get("platform") ?? "instagram") as NetworkKey;
+    if (!name || !handle) return;
+
+    const competitor: Competitor = { id: randomId("comp"), name, handle, platform, addedAt: new Date().toISOString() };
+    persist({ ...data, competitors: [competitor, ...data.competitors] }, "Concorrente adicionado.");
+    setShowForm(false);
+  }
+
+  function removeCompetitor(id: string) {
+    persist({ ...data, competitors: data.competitors.filter((c) => c.id !== id) });
+  }
+
+  return (
+    <section className="grid gap-5">
+      <div className="flex items-center justify-between">
+        <button type="button" onClick={() => setShowForm(!showForm)} className="rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet/15 transition hover:bg-violet/85">
+          {showForm ? "Cancelar" : "+ Adicionar concorrente"}
+        </button>
+      </div>
+
+      {showForm && (
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+          <h3 className="mb-4 font-display text-lg">Novo concorrente</h3>
+          <FormGrid action={handleAddCompetitor}>
+            <Field label="Nome" name="name" placeholder="Ex: Fulano" />
+            <Field label="Arroba / Handle" name="handle" placeholder="@fulano" />
+            <SelectField label="Plataforma" name="platform" options={[
+              { label: "Instagram", value: "instagram" },
+              { label: "TikTok", value: "tiktok" },
+              { label: "YouTube", value: "youtube" },
+              { label: "Facebook", value: "facebook" },
+            ]} />
+            <PrimaryButton label="Adicionar" />
+          </FormGrid>
+        </section>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {data.competitors.length === 0 && !showForm && (
+          <p className="col-span-full rounded-2xl border border-dashed border-violet/15 px-6 py-10 text-center text-sm text-ink/40">Nenhum concorrente cadastrado ainda.</p>
+        )}
+        {data.competitors.map((comp) => (
+          <div key={comp.id} className="flex items-center justify-between rounded-[1.25rem] border border-violet/10 bg-white p-4">
+            <div>
+              <p className="font-medium text-ink">{comp.name}</p>
+              <p className="text-sm text-ink/50">{comp.handle} · {networkLabels[comp.platform]}</p>
+            </div>
+            <button type="button" onClick={() => removeCompetitor(comp.id)} className="rounded-full bg-rose-50 px-3 py-1 text-xs font-medium text-rose-500 hover:bg-rose-100">Remover</button>
+          </div>
+        ))}
+      </div>
+
+      {data.competitors.length > 0 && (
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+          <h3 className="mb-3 font-display text-lg">Analise comparativa</h3>
+          <p className="text-sm text-ink/50">A analise automatica por IA sera ativada em breve. Cadastre os concorrentes e o sistema coletara dados diarios para comparacao.</p>
+        </section>
+      )}
+    </section>
   );
 }
 
