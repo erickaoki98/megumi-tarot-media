@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 
-import { BundleSocialError, createPost, isBundleConfigured, uploadFromUrl, uploadMedia } from "@/lib/bundle-social";
+import {
+  createPost,
+  isWoopConfigured,
+  listSocialAccounts,
+  networkToPlatform,
+  resolveProjectId,
+  uploadMediaBlob,
+  WoopSocialError,
+} from "@/lib/woopsocial";
 import { NetworkKey } from "@/types/app";
 
 export const dynamic = "force-dynamic";
@@ -8,9 +16,9 @@ export const dynamic = "force-dynamic";
 const validNetworks: NetworkKey[] = ["instagram", "facebook", "youtube", "tiktok"];
 
 export async function POST(request: Request) {
-  if (!isBundleConfigured()) {
+  if (!isWoopConfigured()) {
     return NextResponse.json(
-      { ok: false, error: "Integracao bundle.social nao configurada (defina BUNDLE_SOCIAL_API_KEY e BUNDLE_SOCIAL_TEAM_ID)." },
+      { ok: false, error: "Integracao WoopSocial nao configurada (defina WOOPSOCIAL_API_KEY)." },
       { status: 400 },
     );
   }
@@ -44,35 +52,69 @@ export async function POST(request: Request) {
 
   if (!file && !mediaUrl) {
     return NextResponse.json(
-      { ok: false, error: "Forneca um arquivo ou uma URL de midia para publicar via bundle.social." },
+      { ok: false, error: "Forneca um arquivo ou uma URL de midia para publicar via WoopSocial." },
       { status: 400 },
     );
   }
 
   try {
-    const upload = mediaUrl ? await uploadFromUrl(mediaUrl) : await uploadMedia(file as File);
-    const uploadMime = upload.mime ?? upload.mimeType ?? "";
-    const isImage = uploadMime
-      ? uploadMime.startsWith("image/")
+    const projectId = await resolveProjectId();
+    if (!projectId) {
+      return NextResponse.json(
+        { ok: false, error: "Nenhum projeto WoopSocial encontrado. Defina WOOPSOCIAL_PROJECT_ID." },
+        { status: 400 },
+      );
+    }
+
+    const social = await listSocialAccounts(projectId);
+    const accounts = networks.flatMap((network) => {
+      const platform = networkToPlatform[network];
+      const match = social.find((account) => account.platform.toUpperCase() === platform);
+      return match ? [{ socialAccountId: match.id, platform }] : [];
+    });
+
+    if (!accounts.length) {
+      return NextResponse.json(
+        { ok: false, error: "Nenhuma das redes selecionadas esta conectada na WoopSocial. Conecte as contas na aba Config." },
+        { status: 400 },
+      );
+    }
+
+    // Resolve o blob da midia (arquivo enviado ou URL publica do R2) e envia ao WoopSocial.
+    let blob: Blob;
+    if (file) {
+      blob = file;
+    } else {
+      const remote = await fetch(mediaUrl);
+      if (!remote.ok) {
+        return NextResponse.json({ ok: false, error: "Falha ao baixar a midia da URL informada." }, { status: 400 });
+      }
+      blob = await remote.blob();
+    }
+
+    const isImage = (blob.type || (file?.type ?? "")).startsWith("image/")
+      ? true
       : mediaType
         ? mediaType === "image"
-        : (file?.type ?? "").startsWith("image/");
+        : false;
+
+    const media = await uploadMediaBlob(blob, projectId);
 
     const post = await createPost({
       title,
       caption,
       scheduledFor,
-      networks,
-      uploadIds: [upload.id],
+      mediaId: media.id,
       isImage,
       schedule,
+      accounts,
       format: mediaFormat || undefined,
     });
 
-    return NextResponse.json({ ok: true, postId: post.id, status: post.status ?? (schedule ? "SCHEDULED" : "DRAFT") });
+    return NextResponse.json({ ok: true, postId: post.id, status: post.status });
   } catch (error) {
-    const status = error instanceof BundleSocialError ? error.status : 500;
-    const message = error instanceof Error ? error.message : "Falha ao publicar no bundle.social.";
+    const status = error instanceof WoopSocialError ? error.status : 500;
+    const message = error instanceof Error ? error.message : "Falha ao publicar no WoopSocial.";
     return NextResponse.json({ ok: false, error: message }, { status });
   }
 }

@@ -38,32 +38,44 @@ Recommended production settings:
 
 Secrets live only in server-side environment variables (`Vercel -> Project Settings ->
 Environment Variables`), never in the browser or `localStorage`. Use `.env.example` as
-the reference. Publishing needs only the bundle.social and Cloudflare R2 variables below.
+the reference. Publishing needs only the WoopSocial and Cloudflare R2 variables below.
 
-## Publishing via bundle.social
+## Publishing via WoopSocial
 
-Real publishing/scheduling is powered by [bundle.social](https://bundle.social), which handles each platform's OAuth and delivery. You only need two server-side variables:
+Real publishing/scheduling is powered by [WoopSocial](https://woopsocial.com), which handles each platform's OAuth and delivery. You only need a server-side API key:
 
 ```
-BUNDLE_SOCIAL_API_KEY=pk_...     # from your bundle.social organization
-BUNDLE_SOCIAL_TEAM_ID=...        # from GET https://api.bundle.social/api/v1/team/
+WOOPSOCIAL_API_KEY=...        # from your WoopSocial dashboard (Bearer token)
+WOOPSOCIAL_PROJECT_ID=...     # optional; defaults to the first project in the account
 ```
 
 Flow:
 
-1. Connect your Instagram/Facebook/YouTube/TikTok accounts inside bundle.social.
-2. Set the two env vars above in Vercel and redeploy.
-3. The `Config` tab shows whether the key/team are set and which accounts are connected.
-4. In `Agendamentos`, attach a media file and pick `Agendar no bundle.social` (or `Salvar como rascunho`) when creating a schedule. The app uploads the file (`POST /upload`) and creates the post (`POST /post`) for the selected networks.
+1. Set `WOOPSOCIAL_API_KEY` in Vercel and redeploy.
+2. In the `Config` tab, click `Conectar` on each network — the app opens the WoopSocial OAuth authorization in a new tab. Authorize and click `Atualizar status`.
+3. In `Agendamentos`, attach a media file and pick `Agendar/publicar na WoopSocial` (or `Salvar como rascunho`). The app uploads the media (`POST /media`) and creates the post (`POST /posts`) for the connected networks.
+4. In `Engajamento`, click `Atualizar dados dos posts` to pull each connected account's posts and compute an engagement score per post and per network.
 
-Endpoints used (header `x-api-key`):
+Base URL `https://api.woopsocial.com/v1` (header `Authorization: Bearer <key>`). Endpoints used:
 
-- `POST /api/v1/upload/` — multipart upload, returns `{ id }`.
-- `POST /api/v1/upload/from-url` — register media already hosted on R2, returns `{ id }`.
-- `POST /api/v1/post/` — `{ teamId, title, postDate, status, socialAccountTypes, data }`.
-- `GET /api/v1/social-account/by-type` — connection status per network.
+- `GET /projects` — resolve the project.
+- `GET /social-accounts?projectId=` — connection status per network.
+- `POST /social-accounts/oauth-authorization` — `{ platform, projectId, redirectUrl }` returns `{ url }`.
+- `POST /media?projectId=` — upload the media blob, returns `{ id }`.
+- `POST /posts` — `{ content, schedule, socialAccounts }`.
+- `GET /social-accounts/{id}/posts` — posts per account (used for the engagement dashboard).
 
-Server code lives in `lib/bundle-social.ts`; routes in `app/api/social/{status,publish}`.
+Server code lives in `lib/woopsocial.ts` and `lib/engagement.ts`; routes in `app/api/social/{status,publish,connect,insights}`.
+
+## Pontuacao de engajamento (aba Engajamento)
+
+A aba `Engajamento` puxa os posts das contas conectadas na WoopSocial (`GET /social-accounts/{id}/posts`) e calcula, por post, uma nota de engajamento (0-100) em `lib/engagement.ts`:
+
+- **Interacoes ponderadas**: comentarios, compartilhamentos e salvamentos valem mais que curtidas.
+- **Taxa de engajamento** = interacoes ponderadas / alcance (reach, ou impressions/views como fallback).
+- **Nota (0-100)** = taxa de engajamento (peso maior) + alcance em escala logaritmica.
+
+A leitura das metricas e defensiva: varremos os nomes mais comuns por plataforma (`likes`, `commentCount`, `reach`, etc.) e containers aninhados (`metrics`, `insights`, `analytics`). Quando a WoopSocial ainda nao expoe metricas para a conta, o dashboard mostra os posts puxados e avisa que as notas aparecerao assim que as metricas estiverem disponiveis.
 
 ## Media storage (Cloudflare R2)
 
@@ -79,9 +91,9 @@ R2_PUBLIC_BASE_URL=https://media.example.com   # public bucket / custom domain, 
 ```
 
 Flow: file -> `POST /api/media/upload` (`lib/r2.ts`) -> stored in R2, public URL saved
-on the media item -> publishing sends that URL to bundle.social via `/upload/from-url`.
-The bucket must be publicly readable (or served through a public custom domain) so
-bundle.social can fetch the media. Use the `Publicar no bundle.social` button on any
+on the media item -> publishing fetches that URL server-side and uploads it to WoopSocial
+via `POST /media`. The bucket must be publicly readable (or served through a public custom
+domain) so the server can fetch the media. Use the `Publicar na WoopSocial` button on any
 queued schedule whose media has an R2 URL.
 
 ## Plano do dia (algoritmo de repostagem)

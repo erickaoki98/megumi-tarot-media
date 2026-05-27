@@ -34,14 +34,54 @@ type DraftPreviewState = {
   url: string;
 };
 
-type BundleClientStatus = {
+type WoopClientStatus = {
   configured: boolean;
-  hasApiKey: boolean;
-  hasTeamId: boolean;
-  accounts: Record<NetworkKey, { connected: boolean; username: string | null }>;
+  projectId: string | null;
+  projectName: string | null;
+  accounts: Record<NetworkKey, { connected: boolean; username: string | null; socialAccountId: string | null }>;
   error: string | null;
   r2Configured: boolean;
   aiConfigured: boolean;
+};
+
+type PostMetrics = {
+  likes: number;
+  comments: number;
+  shares: number;
+  saves: number;
+  views: number;
+  impressions: number;
+  reach: number;
+  clicks: number;
+};
+
+type ScoredPost = {
+  id: string;
+  network: NetworkKey | null;
+  platform: string;
+  caption: string;
+  publishedAt: string | null;
+  permalink: string | null;
+  metrics: PostMetrics;
+  engagementRate: number;
+  score: number;
+  hasMetrics: boolean;
+};
+
+type EngagementDashboard = {
+  totalPosts: number;
+  postsWithMetrics: number;
+  avgScore: number;
+  totals: PostMetrics;
+  byNetwork: Array<{
+    network: NetworkKey;
+    posts: number;
+    avgScore: number;
+    avgEngagementRate: number;
+    totals: PostMetrics;
+  }>;
+  topPosts: ScoredPost[];
+  metricsAvailable: boolean;
 };
 
 function todayLocalDate(): string {
@@ -112,6 +152,15 @@ function randomId(prefix: string) {
 function inferMediaTypeFromFile(file: File): MediaItem["type"] {
   return file.type.startsWith("image/") ? "image" : "video";
 }
+
+function normalizeWoopStatus(status: unknown): NonNullable<ScheduleItem["woopStatus"]> {
+  const value = String(status ?? "").toUpperCase();
+  if (value === "DRAFT") return "DRAFT";
+  if (value === "PUBLISHED" || value === "PUBLISH_NOW") return "PUBLISHED";
+  return "SCHEDULED";
+}
+
+const numberFmt = new Intl.NumberFormat("pt-BR");
 
 function stripExtension(name: string): string {
   return name.replace(/\.[^./\\]+$/, "");
@@ -241,8 +290,12 @@ export function PulsePostApp() {
   const [scheduleFormKey, setScheduleFormKey] = useState(0);
   const [detectedMediaInfo, setDetectedMediaInfo] = useState<{ duration: string; format: string } | null>(null);
   const [detectedScheduleMediaInfo, setDetectedScheduleMediaInfo] = useState<{ duration: string; format: string } | null>(null);
-  const [bundleStatus, setBundleStatus] = useState<BundleClientStatus | null>(null);
+  const [woopStatus, setWoopStatus] = useState<WoopClientStatus | null>(null);
   const [publishingSchedule, setPublishingSchedule] = useState(false);
+  const [connectingNetwork, setConnectingNetwork] = useState<NetworkKey | null>(null);
+  const [insights, setInsights] = useState<EngagementDashboard | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
   const [planOptions, setPlanOptions] = useState<PlanOptions>(defaultPlanOptions);
   const [planDate, setPlanDate] = useState<string>(todayLocalDate());
   const [planNewMediaIds, setPlanNewMediaIds] = useState<string[]>([]);
@@ -256,14 +309,14 @@ export function PulsePostApp() {
     let cancelled = false;
     fetch("/api/social/status")
       .then((response) => (response.ok ? response.json() : null))
-      .then((status: BundleClientStatus | null) => {
+      .then((status: WoopClientStatus | null) => {
         if (!cancelled) {
-          setBundleStatus(status);
+          setWoopStatus(status);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setBundleStatus(null);
+          setWoopStatus(null);
         }
       });
     return () => {
@@ -293,6 +346,13 @@ export function PulsePostApp() {
     const pageTitle = pageTitleMap[activeView];
     document.title = `Megumi Tarot - Media Center${pageTitle ? ` - ${pageTitle}` : ""}`;
   }, [activeView]);
+
+  useEffect(() => {
+    if (activeView === "insights" && insights === null && !insightsLoading && woopStatus?.configured) {
+      loadInsights();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, woopStatus?.configured]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -331,10 +391,67 @@ export function PulsePostApp() {
 
   const connectedNetworks = useMemo<NetworkKey[]>(() => {
     const connected = (Object.keys(networkLabels) as NetworkKey[]).filter(
-      (network) => bundleStatus?.accounts?.[network]?.connected,
+      (network) => woopStatus?.accounts?.[network]?.connected,
     );
     return connected.length ? connected : (Object.keys(networkLabels) as NetworkKey[]);
-  }, [bundleStatus]);
+  }, [woopStatus]);
+
+  async function refreshStatus() {
+    try {
+      const response = await fetch("/api/social/status");
+      if (response.ok) {
+        setWoopStatus(await response.json());
+      }
+    } catch {
+      // mantem o status atual em caso de falha de rede
+    }
+  }
+
+  async function connectNetwork(network: NetworkKey) {
+    setConnectingNetwork(network);
+    try {
+      const response = await fetch("/api/social/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ network }),
+      });
+      const result = await response.json();
+      if (response.ok && result.ok && result.url) {
+        window.open(result.url, "_blank", "noopener,noreferrer");
+        setFlash({
+          message: `Abrimos a autorizacao do ${networkLabels[network]}. Conclua e clique em "Atualizar status".`,
+          kind: "success",
+        });
+      } else {
+        setFlash({ message: `Falha ao conectar: ${result.error ?? "erro desconhecido"}`, kind: "error" });
+      }
+    } catch {
+      setFlash({ message: "Nao foi possivel contatar a API da WoopSocial.", kind: "error" });
+    } finally {
+      setConnectingNetwork(null);
+    }
+  }
+
+  async function loadInsights() {
+    setInsightsLoading(true);
+    setInsightsError(null);
+    try {
+      const response = await fetch("/api/social/insights");
+      const result = await response.json();
+      if (response.ok && result.ok) {
+        setInsights(result.dashboard as EngagementDashboard);
+        if (result.connectedAccounts === 0) {
+          setInsightsError("Nenhuma conta conectada na WoopSocial. Conecte as contas na aba Config.");
+        }
+      } else {
+        setInsightsError(result.error ?? "Falha ao puxar os dados de engajamento.");
+      }
+    } catch {
+      setInsightsError("Nao foi possivel contatar a API da WoopSocial.");
+    } finally {
+      setInsightsLoading(false);
+    }
+  }
 
   function togglePlanNewMedia(id: string) {
     setPlanNewMediaIds((current) =>
@@ -409,8 +526,8 @@ export function PulsePostApp() {
         caption,
         status: "scheduled",
         repostRuleId: null,
-        bundlePostId: null,
-        bundleStatus: null,
+        woopPostId: null,
+        woopStatus: null,
       });
 
       postedAtById.set(media.id, slot.time);
@@ -592,7 +709,7 @@ export function PulsePostApp() {
     const scheduledFor = String(formData.get("scheduledFor") ?? "");
     const caption = String(formData.get("caption") ?? "").trim();
     const title = String(formData.get("title") ?? "").trim();
-    const bundleMode = String(formData.get("bundleMode") ?? "off");
+    const woopMode = String(formData.get("woopMode") ?? "off");
 
     const nextSchedule: ScheduleItem = {
       id: randomId("schedule"),
@@ -603,8 +720,8 @@ export function PulsePostApp() {
       caption,
       status: "scheduled",
       repostRuleId: String(formData.get("repostRuleId") ?? "") || null,
-      bundlePostId: null,
-      bundleStatus: null,
+      woopPostId: null,
+      woopStatus: null,
     };
 
     const baseState = { ...data, mediaLibrary: nextMediaLibrary, schedules: [nextSchedule, ...data.schedules] };
@@ -613,7 +730,7 @@ export function PulsePostApp() {
     setDetectedScheduleMediaInfo(null);
     setPickerMediaId(null);
 
-    if (bundleMode !== "off") {
+    if (woopMode !== "off") {
       if (!resolvedMediaUrl && !uploadedFile) {
         setFlash({ message: "Anexe um arquivo ou use uma midia ja enviada ao R2 para publicar.", kind: "error" });
       } else {
@@ -622,7 +739,7 @@ export function PulsePostApp() {
         publishForm.set("title", title || "Post");
         publishForm.set("caption", caption);
         publishForm.set("scheduledFor", scheduledFor);
-        publishForm.set("mode", bundleMode);
+        publishForm.set("mode", woopMode);
         if (resolvedMediaUrl) {
           publishForm.set("mediaUrl", resolvedMediaUrl);
         } else if (uploadedFile) {
@@ -638,21 +755,26 @@ export function PulsePostApp() {
           const response = await fetch("/api/social/publish", { method: "POST", body: publishForm });
           const result = await response.json();
           if (response.ok && result.ok) {
-            updateScheduleBundleResult(baseState, nextSchedule.id, {
-              bundlePostId: result.postId ?? null,
-              bundleStatus: result.status === "DRAFT" ? "DRAFT" : "SCHEDULED",
+            updateScheduleWoopResult(baseState, nextSchedule.id, {
+              woopPostId: result.postId ?? null,
+              woopStatus: normalizeWoopStatus(result.status),
             });
             setFlash({
-              message: result.status === "DRAFT" ? "Rascunho criado no bundle.social." : "Post enviado e agendado no bundle.social.",
+              message:
+                result.status === "DRAFT"
+                  ? "Rascunho criado na WoopSocial."
+                  : result.status === "PUBLISH_NOW" || result.status === "PUBLISHED"
+                    ? "Post publicado na WoopSocial."
+                    : "Post agendado na WoopSocial.",
               kind: "success",
             });
           } else {
-            updateScheduleBundleResult(baseState, nextSchedule.id, { bundlePostId: null, bundleStatus: "error" });
-            setFlash({ message: `Falha no bundle.social: ${result.error ?? "erro desconhecido"}`, kind: "error" });
+            updateScheduleWoopResult(baseState, nextSchedule.id, { woopPostId: null, woopStatus: "error" });
+            setFlash({ message: `Falha na WoopSocial: ${result.error ?? "erro desconhecido"}`, kind: "error" });
           }
         } catch {
-          updateScheduleBundleResult(baseState, nextSchedule.id, { bundlePostId: null, bundleStatus: "error" });
-          setFlash({ message: "Nao foi possivel contatar a API do bundle.social.", kind: "error" });
+          updateScheduleWoopResult(baseState, nextSchedule.id, { woopPostId: null, woopStatus: "error" });
+          setFlash({ message: "Nao foi possivel contatar a API da WoopSocial.", kind: "error" });
         } finally {
           setPublishingSchedule(false);
         }
@@ -689,8 +811,8 @@ export function PulsePostApp() {
           item.id === schedule.id
             ? {
                 ...item,
-                bundlePostId: response.ok && result.ok ? result.postId ?? null : null,
-                bundleStatus: (response.ok && result.ok ? (result.status === "DRAFT" ? "DRAFT" : "SCHEDULED") : "error") as ScheduleItem["bundleStatus"],
+                woopPostId: response.ok && result.ok ? result.postId ?? null : null,
+                woopStatus: (response.ok && result.ok ? normalizeWoopStatus(result.status) : "error") as ScheduleItem["woopStatus"],
               }
             : item,
         ),
@@ -698,21 +820,21 @@ export function PulsePostApp() {
       persist(
         nextState,
         response.ok && result.ok
-          ? "Agendamento publicado no bundle.social."
-          : `Falha no bundle.social: ${result.error ?? "erro desconhecido"}`,
+          ? "Agendamento publicado na WoopSocial."
+          : `Falha na WoopSocial: ${result.error ?? "erro desconhecido"}`,
         response.ok && result.ok ? "success" : "error",
       );
     } catch {
-      setFlash({ message: "Nao foi possivel contatar a API do bundle.social.", kind: "error" });
+      setFlash({ message: "Nao foi possivel contatar a API da WoopSocial.", kind: "error" });
     } finally {
       setPublishingSchedule(false);
     }
   }
 
-  function updateScheduleBundleResult(
+  function updateScheduleWoopResult(
     fromState: PersistedState,
     scheduleId: string,
-    patch: Pick<ScheduleItem, "bundlePostId" | "bundleStatus">,
+    patch: Pick<ScheduleItem, "woopPostId" | "woopStatus">,
   ) {
     const nextState = {
       ...fromState,
@@ -982,6 +1104,7 @@ export function PulsePostApp() {
                   { key: "library", label: "Biblioteca" },
                   { key: "scheduler", label: "Agendamentos" },
                   { key: "plan", label: "Plano do dia" },
+                  { key: "insights", label: "Engajamento" },
                   { key: "reposts", label: "Repostagem" },
                   { key: "users", label: "Usuarios" },
                   { key: "config", label: "Config" },
@@ -1283,20 +1406,20 @@ export function PulsePostApp() {
                       <Field label="Legenda base" name="caption" placeholder="Legenda adaptavel por rede" />
                       <div className="rounded-[1.25rem] border border-violet/10 bg-violet/4 p-4">
                         <SelectField
-                          label="Publicacao via bundle.social"
-                          name="bundleMode"
+                          label="Publicacao via WoopSocial"
+                          name="woopMode"
                           options={[
                             { label: "Somente local (nao enviar)", value: "off" },
-                            { label: "Agendar no bundle.social", value: "scheduled" },
+                            { label: "Agendar/publicar na WoopSocial", value: "scheduled" },
                             { label: "Salvar como rascunho", value: "draft" },
                           ]}
                         />
                         <p className="mt-2 text-xs text-ink/55">
-                          {bundleStatus?.configured
-                            ? bundleStatus.r2Configured
-                              ? "O arquivo anexado e enviado ao Cloudflare R2 e publicado via bundle.social. Voce tambem pode publicar agendamentos existentes pela fila ao lado."
+                          {woopStatus?.configured
+                            ? woopStatus.r2Configured
+                              ? "O arquivo anexado e enviado ao Cloudflare R2 e publicado via WoopSocial. Voce tambem pode publicar agendamentos existentes pela fila ao lado."
                               : "Anexe o arquivo de midia acima. (R2 nao configurado: o arquivo sera enviado direto, sem armazenamento permanente.)"
-                            : "Integracao bundle.social nao configurada. Defina BUNDLE_SOCIAL_API_KEY e BUNDLE_SOCIAL_TEAM_ID no servidor."}
+                            : "Integracao WoopSocial nao configurada. Defina WOOPSOCIAL_API_KEY no servidor."}
                         </p>
                       </div>
                       <PrimaryButton label={publishingSchedule ? "Enviando..." : "Salvar agendamento"} />
@@ -1319,25 +1442,27 @@ export function PulsePostApp() {
                             <p className="mt-3 text-sm text-ink/60">Midia: {getLinkedMediaTitle(schedule.mediaId)}</p>
                             <p className="mt-1 text-sm text-ink/60">{schedule.caption}</p>
                             <div className="mt-3 flex flex-wrap items-center gap-3">
-                              {schedule.bundleStatus ? (
+                              {schedule.woopStatus ? (
                                 <span
                                   className={classNames(
                                     "inline-flex rounded-full px-3 py-1 text-xs",
-                                    schedule.bundleStatus === "error"
+                                    schedule.woopStatus === "error"
                                       ? "bg-rose-100 text-rose-700"
                                       : "bg-emerald-100 text-emerald-700",
                                   )}
                                 >
-                                  {schedule.bundleStatus === "error"
-                                    ? "Falha no bundle.social"
-                                    : schedule.bundleStatus === "DRAFT"
-                                      ? "Rascunho no bundle.social"
-                                      : "Agendado no bundle.social"}
+                                  {schedule.woopStatus === "error"
+                                    ? "Falha na WoopSocial"
+                                    : schedule.woopStatus === "DRAFT"
+                                      ? "Rascunho na WoopSocial"
+                                      : schedule.woopStatus === "PUBLISHED"
+                                        ? "Publicado na WoopSocial"
+                                        : "Agendado na WoopSocial"}
                                 </span>
                               ) : null}
-                              {scheduleHasStoredMedia(schedule) && bundleStatus?.configured ? (
+                              {scheduleHasStoredMedia(schedule) && woopStatus?.configured ? (
                                 <SecondaryButton
-                                  label={publishingSchedule ? "Enviando..." : "Publicar no bundle.social"}
+                                  label={publishingSchedule ? "Enviando..." : "Publicar na WoopSocial"}
                                   onClick={() => publishExistingSchedule(schedule)}
                                 />
                               ) : null}
@@ -1476,7 +1601,7 @@ export function PulsePostApp() {
                         <span className="text-ink/75">
                           Gerar legendas novas com IA para os reposts
                           <span className="block text-xs text-ink/50">
-                            {bundleStatus?.aiConfigured
+                            {woopStatus?.aiConfigured
                               ? "OpenAI configurada — legendas frescas de tarot por repost."
                               : "Sem OPENAI_API_KEY: usa variacao local para o repost nao sair identico."}
                           </span>
@@ -1730,63 +1855,184 @@ export function PulsePostApp() {
 
               {activeView === "config" ? (
                 <section className="grid gap-5">
-                  <Card title="Publicacao via bundle.social" description="Integracao real de publicacao. O bundle.social cuida do OAuth e da entrega para cada rede; aqui basta uma API key e o team.">
+                  <Card
+                    title="Conectar contas (WoopSocial)"
+                    description="A WoopSocial cuida do OAuth e da entrega para cada rede. Conecte cada conta abaixo; a chave fica em WOOPSOCIAL_API_KEY no servidor."
+                  >
                     <div
                       className={classNames(
                         "mb-5 rounded-[1.25rem] border px-4 py-4 text-sm leading-6",
-                        bundleStatus?.configured
+                        woopStatus?.configured && !woopStatus.error
                           ? "border-emerald-200 bg-emerald-50 text-emerald-900"
                           : "border-amber-200 bg-amber-50 text-amber-900",
                       )}
                     >
-                      {bundleStatus === null
-                        ? "Verificando configuracao do bundle.social..."
-                        : bundleStatus.configured
-                          ? bundleStatus.error
-                            ? `Chave configurada, mas houve erro ao consultar contas: ${bundleStatus.error}`
-                            : "API key e team configurados. As contas conectadas aparecem abaixo."
-                          : "Defina BUNDLE_SOCIAL_API_KEY e BUNDLE_SOCIAL_TEAM_ID no ambiente do servidor (Vercel) e faca um novo deploy."}
+                      {woopStatus === null
+                        ? "Verificando configuracao da WoopSocial..."
+                        : woopStatus.configured
+                          ? woopStatus.error
+                            ? `Chave configurada, mas houve erro ao consultar a WoopSocial: ${woopStatus.error}`
+                            : `Conectado ao projeto ${woopStatus.projectName ?? woopStatus.projectId ?? "(padrao)"}. Conecte ou revise as contas abaixo.`
+                          : "Defina WOOPSOCIAL_API_KEY (e opcionalmente WOOPSOCIAL_PROJECT_ID) no ambiente do servidor (Vercel) e faca um novo deploy."}
                     </div>
+
                     <div className="grid gap-3 md:grid-cols-2">
                       {(Object.keys(networkLabels) as NetworkKey[]).map((network) => {
-                        const account = bundleStatus?.accounts?.[network];
+                        const account = woopStatus?.accounts?.[network];
                         const connected = Boolean(account?.connected);
                         return (
-                          <div key={network} className="flex items-center justify-between rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+                          <div key={network} className="flex items-center justify-between gap-3 rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
                             <div>
                               <div className="text-sm font-medium text-ink">{networkLabels[network]}</div>
-                              <div className="mt-1 text-xs text-ink/55">{account?.username ? `@${account.username}` : "conta nao conectada"}</div>
+                              <div className="mt-1 text-xs text-ink/55">
+                                {connected ? (account?.username ? `@${account.username}` : "conta conectada") : "conta nao conectada"}
+                              </div>
                             </div>
-                            <StatusPill status={connected ? "connected" : "pending"} />
+                            <div className="flex items-center gap-2">
+                              <StatusPill status={connected ? "connected" : "pending"} />
+                              <button
+                                type="button"
+                                disabled={!woopStatus?.configured || connectingNetwork === network}
+                                onClick={() => connectNetwork(network)}
+                                className="rounded-full bg-violet px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+                              >
+                                {connectingNetwork === network ? "Abrindo..." : connected ? "Reconectar" : "Conectar"}
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
                     </div>
+
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <SecondaryButton label="Atualizar status" onClick={refreshStatus} />
+                    </div>
+
                     <div className="mt-4 grid gap-2 text-sm text-ink/60">
                       <div className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
-                        <span className="font-mono text-xs text-violet">BUNDLE_SOCIAL_API_KEY</span>
-                        <span className="ml-2 text-xs">{bundleStatus?.hasApiKey ? "configurada" : "pendente"}</span>
+                        <span className="font-mono text-xs text-violet">WOOPSOCIAL_API_KEY</span>
+                        <span className="ml-2 text-xs">{woopStatus?.configured ? "configurada" : "pendente"}</span>
                       </div>
                       <div className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
-                        <span className="font-mono text-xs text-violet">BUNDLE_SOCIAL_TEAM_ID</span>
-                        <span className="ml-2 text-xs">{bundleStatus?.hasTeamId ? "configurado" : "pendente"}</span>
+                        <span className="font-mono text-xs text-violet">Projeto WoopSocial</span>
+                        <span className="ml-2 text-xs">{woopStatus?.projectId ? woopStatus.projectName ?? woopStatus.projectId : "pendente"}</span>
                       </div>
                       <div className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
                         <span className="font-mono text-xs text-violet">Cloudflare R2 (R2_*)</span>
-                        <span className="ml-2 text-xs">{bundleStatus?.r2Configured ? "configurado" : "pendente"}</span>
+                        <span className="ml-2 text-xs">{woopStatus?.r2Configured ? "configurado" : "pendente"}</span>
                       </div>
-                      <p className="text-xs text-ink/50">
-                        Conecte as contas em app.bundle.social (ou via portal link) e configure as variaveis acima. As midias enviadas vao para o Cloudflare R2, e a publicacao acontece na aba Agendamentos.
-                      </p>
                     </div>
                   </Card>
 
-                  <Card title="Como conectar as contas" description="As contas sao conectadas direto no bundle.social, que cuida de todo o OAuth e da entrega para cada rede.">
-                    <div className="grid gap-3 text-sm leading-6 text-ink/60">
-                      <p>Autorize Instagram, Facebook, YouTube e TikTok pelo portal de conexao do bundle.social (gerado no painel deles ou por link). O status de cada conta aparece no card acima.</p>
-                      <p>Nao e mais necessario preencher segredos por rede aqui: a publicacao usa somente a API key do bundle.social e o team, configurados em variaveis de ambiente no servidor.</p>
-                      <p>As midias enviadas ficam no Cloudflare R2; ao publicar, a URL e enviada ao bundle.social. Faca os envios e agendamentos pela aba Agendamentos.</p>
+                  <Card title="Como conectar" description="Fluxo de conexao via OAuth da WoopSocial.">
+                    <ol className="grid list-decimal gap-2 pl-5 text-sm leading-6 text-ink/60">
+                      <li>Defina <span className="font-mono text-xs text-violet">WOOPSOCIAL_API_KEY</span> no servidor (e opcionalmente <span className="font-mono text-xs text-violet">WOOPSOCIAL_PROJECT_ID</span>) e faca um novo deploy.</li>
+                      <li>Clique em <strong>Conectar</strong> na rede desejada. Abrimos a autorizacao OAuth da WoopSocial em uma nova aba.</li>
+                      <li>Autorize a conta na rede social e volte. Clique em <strong>Atualizar status</strong> para confirmar a conexao.</li>
+                      <li>Publique e agende pela aba <strong>Agendamentos</strong>. Acompanhe o engajamento na aba <strong>Engajamento</strong>.</li>
+                    </ol>
+                  </Card>
+                </section>
+              ) : null}
+
+              {activeView === "insights" ? (
+                <section className="grid gap-5">
+                  <Card
+                    title="Pontuacao de engajamento"
+                    description="Puxamos os posts das contas conectadas na WoopSocial e calculamos uma nota de engajamento (0-100) por post, ponderando interacoes pelo alcance."
+                  >
+                    <div className="mb-5 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={loadInsights}
+                        disabled={insightsLoading || !woopStatus?.configured}
+                        className="rounded-full bg-violet px-5 py-3 text-sm font-medium text-white disabled:opacity-60"
+                      >
+                        {insightsLoading ? "Puxando dados..." : "Atualizar dados dos posts"}
+                      </button>
+                      {!woopStatus?.configured ? (
+                        <span className="text-xs text-ink/55">Configure a WoopSocial na aba Config para puxar os dados.</span>
+                      ) : null}
                     </div>
+
+                    {insightsError ? <FlashBanner flash={{ message: insightsError, kind: "error" }} className="mb-4" /> : null}
+
+                    {insights ? (
+                      <div className="grid gap-5">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <MetricCard label="Posts analisados" value={numberFmt.format(insights.totalPosts)} />
+                          <MetricCard label="Nota media de engajamento" value={`${insights.avgScore}/100`} />
+                          <MetricCard label="Total de curtidas" value={numberFmt.format(insights.totals.likes)} />
+                        </div>
+
+                        {!insights.metricsAvailable ? (
+                          <div className="rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900">
+                            Os posts foram puxados, mas a WoopSocial ainda nao retornou metricas de engajamento (curtidas, comentarios, alcance) para estas contas. Assim que as metricas estiverem disponiveis, as notas aparecem aqui automaticamente.
+                          </div>
+                        ) : null}
+
+                        {insights.byNetwork.length ? (
+                          <div>
+                            <h4 className="mb-3 text-sm font-medium text-ink/75">Por rede</h4>
+                            <div className="grid gap-3 md:grid-cols-2">
+                              {insights.byNetwork.map((row) => (
+                                <div key={row.network} className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-3">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm font-medium text-ink">{networkLabels[row.network]}</span>
+                                    <span className="rounded-full bg-violet/10 px-3 py-1 text-xs text-violet">{row.avgScore}/100</span>
+                                  </div>
+                                  <p className="mt-2 text-xs text-ink/55">
+                                    {row.posts} post(s) · {row.avgEngagementRate}% engajamento · {numberFmt.format(row.totals.views)} views
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <div>
+                          <h4 className="mb-3 text-sm font-medium text-ink/75">Top posts por engajamento</h4>
+                          <div className="grid gap-2">
+                            {insights.topPosts.length ? (
+                              insights.topPosts.map((post) => (
+                                <article key={post.id} className="rounded-[1.1rem] border border-violet/10 p-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="flex items-center gap-2">
+                                      {post.network ? (
+                                        <span className="rounded-full bg-violet/8 px-3 py-1 text-xs font-medium text-violet">
+                                          {networkLabels[post.network]}
+                                        </span>
+                                      ) : null}
+                                      {post.publishedAt ? (
+                                        <span className="text-xs text-ink/45">{formatDate(post.publishedAt)}</span>
+                                      ) : null}
+                                    </div>
+                                    <span
+                                      className={classNames(
+                                        "rounded-full px-3 py-1 text-xs",
+                                        post.score >= 60 ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600",
+                                      )}
+                                    >
+                                      {post.score}/100
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 line-clamp-2 text-sm text-ink/70">{post.caption || "(sem legenda)"}</p>
+                                  <p className="mt-1 text-xs text-ink/50">
+                                    {numberFmt.format(post.metrics.likes)} curtidas · {numberFmt.format(post.metrics.comments)} comentarios · {numberFmt.format(post.metrics.shares)} compart. · {post.engagementRate}% eng.
+                                  </p>
+                                </article>
+                              ))
+                            ) : (
+                              <p className="text-sm text-ink/55">Nenhum post encontrado nas contas conectadas.</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : !insightsLoading ? (
+                      <div className="rounded-[1.25rem] border border-dashed border-violet/20 bg-violet/4 px-4 py-8 text-center text-sm text-ink/55">
+                        Clique em <strong>Atualizar dados dos posts</strong> para puxar o engajamento das contas conectadas.
+                      </div>
+                    ) : null}
                   </Card>
                 </section>
               ) : null}
@@ -1824,6 +2070,12 @@ const viewMeta: Record<
     actionLabel: "Ver fila",
     onAction: (setActiveView) => () => setActiveView("scheduler"),
   },
+  insights: {
+    title: "Engajamento",
+    description: "Pontuacao de engajamento dos posts puxados da WoopSocial, por rede e por post.",
+    actionLabel: "Conectar contas",
+    onAction: (setActiveView) => () => setActiveView("config"),
+  },
   reposts: {
     title: "Repostagem",
     description: "Configure os gatilhos de reaproveitamento e de remocao por score.",
@@ -1848,6 +2100,7 @@ const pageTitleMap: Record<ViewKey, string> = {
   library: "Biblioteca",
   scheduler: "Agendamentos",
   plan: "Plano do dia",
+  insights: "Engajamento",
   reposts: "Repostagem",
   users: "Usuarios",
   config: "Config",
@@ -1947,6 +2200,8 @@ function NavIcon({ view }: { view: ViewKey }) {
       return <CalendarIcon className="size-4" />;
     case "plan":
       return <CalendarIcon className="size-4" />;
+    case "insights":
+      return <ChartIcon className="size-4" />;
     case "reposts":
       return <CycleIcon className="size-4" />;
     case "users":
@@ -2019,6 +2274,26 @@ function UsersIcon({ className }: { className?: string }) {
       <circle cx="17" cy="10" r="2.4" stroke="currentColor" strokeWidth="1.8" opacity="0.7" />
       <path d="M4.5 18.5a4.5 4.5 0 0 1 9 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       <path d="M14.5 18.5a3.5 3.5 0 0 1 5 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.7" />
+    </svg>
+  );
+}
+
+function MetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-violet/10 bg-violet/5 px-4 py-4">
+      <div className="text-xs uppercase tracking-wide text-ink/50">{label}</div>
+      <div className="mt-1 font-display text-2xl tracking-[-0.03em] text-ink">{value}</div>
+    </div>
+  );
+}
+
+function ChartIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M4 20V5M4 20h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="7.5" y="12" width="3" height="5" rx="0.8" fill="currentColor" opacity="0.8" />
+      <rect x="12.5" y="8" width="3" height="9" rx="0.8" fill="currentColor" opacity="0.6" />
+      <rect x="17" y="10" width="3" height="7" rx="0.8" fill="currentColor" opacity="0.45" />
     </svg>
   );
 }

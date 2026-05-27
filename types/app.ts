@@ -37,8 +37,8 @@ export type ScheduleItem = {
   caption: string;
   status: "scheduled";
   repostRuleId: string | null;
-  bundlePostId?: string | null;
-  bundleStatus?: "SCHEDULED" | "DRAFT" | "error" | null;
+  woopPostId?: string | null;
+  woopStatus?: "SCHEDULED" | "DRAFT" | "PUBLISHED" | "error" | null;
 };
 
 export type RepostRule = {
@@ -81,4 +81,4 @@ export type FlashState = {
   kind: "success" | "error";
 } | null;
 
-export type ViewKey = "library" | "scheduler" | "plan" | "reposts" | "users" | "config";
+export type ViewKey = "library" | "scheduler" | "plan" | "insights" | "reposts" | "users" | "config";
