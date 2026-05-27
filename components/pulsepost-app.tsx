@@ -2610,6 +2610,17 @@ function DashboardView({ data, setActiveView }: { data: PersistedState; setActiv
 
   const topContent = [...data.mediaLibrary].sort((a, b) => (b.compositeScore ?? 0) - (a.compositeScore ?? 0)).slice(0, 5);
 
+  // Upcoming schedules (next 5)
+  const upcoming = [...data.schedules]
+    .filter((s) => new Date(s.scheduledFor).getTime() > Date.now())
+    .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
+    .slice(0, 5);
+
+  // Script status counters
+  const scriptsDraft = data.scripts.filter((s) => s.status === "draft").length;
+  const scriptsReady = data.scripts.filter((s) => s.status === "ready").length;
+  const scriptsRecorded = data.scripts.filter((s) => s.status === "recorded").length;
+
   return (
     <section className="grid gap-5">
       {/* Big Numbers */}
@@ -2620,7 +2631,15 @@ function DashboardView({ data, setActiveView }: { data: PersistedState; setActiv
         <BigNumber label="Views totais" value={totalViews.toLocaleString("pt-BR")} icon="eye" />
       </div>
 
-      {/* Engagement Summary */}
+      {/* Quick actions row */}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => setActiveView("scheduler")} className="rounded-full bg-violet px-4 py-2 text-xs font-medium text-white shadow-md shadow-violet/15 transition hover:bg-violet/85">+ Novo agendamento</button>
+        <button type="button" onClick={() => setActiveView("library")} className="rounded-full bg-violet/8 px-4 py-2 text-xs font-medium text-violet transition hover:bg-violet/15">Biblioteca</button>
+        <button type="button" onClick={() => setActiveView("scripts")} className="rounded-full bg-violet/8 px-4 py-2 text-xs font-medium text-violet transition hover:bg-violet/15">Roteiros</button>
+        <button type="button" onClick={() => setActiveView("insights")} className="rounded-full bg-violet/8 px-4 py-2 text-xs font-medium text-violet transition hover:bg-violet/15">Analytics</button>
+      </div>
+
+      {/* Engagement + Top Content */}
       <div className="grid gap-5 lg:grid-cols-2">
         <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
           <h3 className="mb-4 font-display text-lg tracking-tight">Engajamento medio</h3>
@@ -2664,6 +2683,60 @@ function DashboardView({ data, setActiveView }: { data: PersistedState; setActiv
               </div>
             ))}
           </div>
+        </section>
+      </div>
+
+      {/* Upcoming schedules + Script pipeline */}
+      <div className="grid gap-5 lg:grid-cols-2">
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="font-display text-lg tracking-tight">Proximos agendamentos</h3>
+            <button type="button" onClick={() => setActiveView("calendar")} className="text-xs text-violet hover:underline">Calendario</button>
+          </div>
+          {upcoming.length === 0 ? (
+            <p className="py-6 text-center text-sm text-ink/40">Nenhum agendamento futuro.</p>
+          ) : (
+            <div className="grid gap-2">
+              {upcoming.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 rounded-xl bg-violet/5 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      {s.contentType && (
+                        <span className={classNames("rounded-full px-1.5 py-0.5 text-[9px] font-bold", contentTypeColors[s.contentType])}>{contentTypeLabels[s.contentType]}</span>
+                      )}
+                      <p className="truncate text-sm font-medium text-ink">{s.title}</p>
+                    </div>
+                    <p className="text-xs text-ink/45">{formatNetworkList(s.networks)}</p>
+                  </div>
+                  <span className="shrink-0 text-xs font-medium text-violet">{formatDate(s.scheduledFor)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="font-display text-lg tracking-tight">Pipeline de roteiros</h3>
+            <button type="button" onClick={() => setActiveView("scripts")} className="text-xs text-violet hover:underline">Ver todos</button>
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div className="rounded-xl bg-gray-50 p-4">
+              <p className="text-2xl font-bold text-ink/70">{scriptsDraft}</p>
+              <p className="mt-1 text-[10px] font-medium text-ink/40">Rascunhos</p>
+            </div>
+            <div className="rounded-xl bg-amber-50 p-4">
+              <p className="text-2xl font-bold text-amber-700">{scriptsReady}</p>
+              <p className="mt-1 text-[10px] font-medium text-amber-600/60">Pronto p/ gravar</p>
+            </div>
+            <div className="rounded-xl bg-emerald-50 p-4">
+              <p className="text-2xl font-bold text-emerald-700">{scriptsRecorded}</p>
+              <p className="mt-1 text-[10px] font-medium text-emerald-600/60">Gravados</p>
+            </div>
+          </div>
+          {data.scripts.length === 0 && (
+            <p className="mt-4 text-center text-xs text-ink/40">Nenhum roteiro criado ainda.</p>
+          )}
         </section>
       </div>
     </section>
