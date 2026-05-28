@@ -15,6 +15,7 @@ import {
   AppUser,
   CaptionDraft,
   Competitor,
+  CompetitorSnapshot,
   ContentType,
   FlashState,
   MediaItem,
@@ -2714,8 +2715,29 @@ function DashboardView({ data, setActiveView }: { data: PersistedState; setActiv
   const scriptsReady = data.scripts.filter((s) => s.status === "ready").length;
   const scriptsRecorded = data.scripts.filter((s) => s.status === "recorded").length;
 
+  // Story notifications — stories due within 2 hours
+  const now = Date.now();
+  const storyAlerts = data.schedules.filter((s) => {
+    if (!s.storyNotification) return false;
+    const diff = new Date(s.scheduledFor).getTime() - now;
+    return diff > -3600000 && diff < 7200000; // past 1h to future 2h
+  });
+
   return (
     <section className="grid gap-5">
+      {/* Story notification alerts */}
+      {storyAlerts.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <p className="mb-2 text-sm font-bold text-amber-800">Stories para publicar agora!</p>
+          {storyAlerts.map((s) => (
+            <div key={s.id} className="flex items-center justify-between rounded-lg bg-white/60 px-3 py-2 text-sm">
+              <span className="font-medium text-amber-900">{s.title}</span>
+              <span className="text-xs text-amber-700">{formatDate(s.scheduledFor)} · {formatNetworkList(s.networks)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Big Numbers */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <BigNumber label="Total de midias" value={totalMedia} icon="library" />
@@ -3205,6 +3227,7 @@ function ScriptsView({ data, persist }: { data: PersistedState; persist: (state:
 
 function CompetitorsView({ data, persist }: { data: PersistedState; persist: (state: PersistedState, msg?: string) => void }) {
   const [showForm, setShowForm] = useState(false);
+  const [snapshotCompId, setSnapshotCompId] = useState<string | null>(null);
 
   function handleAddCompetitor(formData: FormData) {
     const name = String(formData.get("name") ?? "").trim();
@@ -3218,15 +3241,35 @@ function CompetitorsView({ data, persist }: { data: PersistedState; persist: (st
   }
 
   function removeCompetitor(id: string) {
-    persist({ ...data, competitors: data.competitors.filter((c) => c.id !== id) });
+    persist({
+      ...data,
+      competitors: data.competitors.filter((c) => c.id !== id),
+      competitorSnapshots: data.competitorSnapshots.filter((s) => s.competitorId !== id),
+    });
+  }
+
+  function handleAddSnapshot(formData: FormData) {
+    if (!snapshotCompId) return;
+    const snapshot: CompetitorSnapshot = {
+      id: randomId("snap"),
+      competitorId: snapshotCompId,
+      date: new Date().toISOString().slice(0, 10),
+      followers: Number(formData.get("followers") ?? 0),
+      views: Number(formData.get("views") ?? 0),
+      engagement: Number(formData.get("engagement") ?? 0),
+      posts: Number(formData.get("posts") ?? 0),
+    };
+    persist({ ...data, competitorSnapshots: [snapshot, ...data.competitorSnapshots] }, "Dados do concorrente registrados.");
+    setSnapshotCompId(null);
   }
 
   return (
     <section className="grid gap-5">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center gap-3">
         <button type="button" onClick={() => setShowForm(!showForm)} className="rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet/15 transition hover:bg-violet/85">
           {showForm ? "Cancelar" : "+ Adicionar concorrente"}
         </button>
+        <p className="text-sm text-ink/40">{data.competitors.length} concorrentes monitorados</p>
       </div>
 
       {showForm && (
@@ -3246,25 +3289,120 @@ function CompetitorsView({ data, persist }: { data: PersistedState; persist: (st
         </section>
       )}
 
+      {/* Snapshot form */}
+      {snapshotCompId && (() => {
+        const comp = data.competitors.find((c) => c.id === snapshotCompId);
+        return comp ? (
+          <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
+            <h3 className="mb-4 font-display text-lg">Registrar dados de {comp.name}</h3>
+            <FormGrid action={handleAddSnapshot}>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <Field label="Seguidores" name="followers" type="number" placeholder="0" />
+                <Field label="Views (total)" name="views" type="number" placeholder="0" />
+                <Field label="Engajamento (%)" name="engagement" type="number" placeholder="0" />
+                <Field label="Posts (total)" name="posts" type="number" placeholder="0" />
+              </div>
+              <div className="flex gap-3">
+                <PrimaryButton label="Salvar dados" />
+                <button type="button" onClick={() => setSnapshotCompId(null)} className="rounded-full bg-ink/5 px-4 py-2 text-xs text-ink/50 hover:bg-ink/10">Cancelar</button>
+              </div>
+            </FormGrid>
+          </section>
+        ) : null;
+      })()}
+
+      {/* Competitor cards */}
       <div className="grid gap-3 sm:grid-cols-2">
         {data.competitors.length === 0 && !showForm && (
           <p className="col-span-full rounded-2xl border border-dashed border-violet/15 px-6 py-10 text-center text-sm text-ink/40">Nenhum concorrente cadastrado ainda.</p>
         )}
-        {data.competitors.map((comp) => (
-          <div key={comp.id} className="flex items-center justify-between rounded-[1.25rem] border border-violet/10 bg-white p-4">
-            <div>
-              <p className="font-medium text-ink">{comp.name}</p>
-              <p className="text-sm text-ink/50">{comp.handle} · {networkLabels[comp.platform]}</p>
+        {data.competitors.map((comp) => {
+          const snapshots = data.competitorSnapshots.filter((s) => s.competitorId === comp.id).sort((a, b) => b.date.localeCompare(a.date));
+          const latest = snapshots[0] ?? null;
+          const previous = snapshots[1] ?? null;
+          return (
+            <div key={comp.id} className="rounded-[1.25rem] border border-violet/10 bg-white p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-medium text-ink">{comp.name}</p>
+                  <p className="text-xs text-ink/50">{comp.handle} · {networkLabels[comp.platform]}</p>
+                </div>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={() => setSnapshotCompId(comp.id)} className="rounded-full bg-violet/8 px-2.5 py-1 text-[10px] font-medium text-violet hover:bg-violet/15">+ Dados</button>
+                  <button type="button" onClick={() => removeCompetitor(comp.id)} className="rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-medium text-rose-500 hover:bg-rose-100">Remover</button>
+                </div>
+              </div>
+              {latest ? (
+                <div className="mt-3 grid grid-cols-2 gap-2 text-center">
+                  <div className="rounded-lg bg-violet/5 p-2">
+                    <p className="text-sm font-bold text-ink">{latest.followers.toLocaleString("pt-BR")}</p>
+                    <p className="text-[9px] text-ink/40">Seguidores</p>
+                    {previous && previous.followers > 0 && (
+                      <p className={classNames("text-[9px] font-bold", latest.followers >= previous.followers ? "text-emerald-600" : "text-rose-500")}>
+                        {latest.followers >= previous.followers ? "+" : ""}{((latest.followers - previous.followers) / previous.followers * 100).toFixed(1)}%
+                      </p>
+                    )}
+                  </div>
+                  <div className="rounded-lg bg-violet/5 p-2">
+                    <p className="text-sm font-bold text-ink">{latest.views >= 1000 ? `${(latest.views / 1000).toFixed(1)}k` : latest.views}</p>
+                    <p className="text-[9px] text-ink/40">Views</p>
+                  </div>
+                  <div className="rounded-lg bg-violet/5 p-2">
+                    <p className="text-sm font-bold text-ink">{latest.engagement}%</p>
+                    <p className="text-[9px] text-ink/40">Engajamento</p>
+                  </div>
+                  <div className="rounded-lg bg-violet/5 p-2">
+                    <p className="text-sm font-bold text-ink">{latest.posts}</p>
+                    <p className="text-[9px] text-ink/40">Posts</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-ink/35">Nenhum dado registrado. Clique em "+ Dados" para adicionar.</p>
+              )}
+              {snapshots.length > 1 && (
+                <p className="mt-2 text-[9px] text-ink/30">{snapshots.length} registros · Ultimo: {latest?.date}</p>
+              )}
             </div>
-            <button type="button" onClick={() => removeCompetitor(comp.id)} className="rounded-full bg-rose-50 px-3 py-1 text-xs font-medium text-rose-500 hover:bg-rose-100">Remover</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {data.competitors.length > 0 && (
+      {/* Comparison table */}
+      {data.competitors.length >= 2 && data.competitorSnapshots.length > 0 && (
         <section className="rounded-[1.75rem] border border-violet/10 bg-white p-5 md:p-6">
-          <h3 className="mb-3 font-display text-lg">Analise comparativa</h3>
-          <p className="text-sm text-ink/50">A analise automatica por IA sera ativada em breve. Cadastre os concorrentes e o sistema coletara dados diarios para comparacao.</p>
+          <h3 className="mb-4 font-display text-lg">Comparacao de concorrentes</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-violet/10 text-xs text-ink/50">
+                  <th className="pb-2 pr-4 font-medium">Concorrente</th>
+                  <th className="pb-2 pr-4 font-medium">Seguidores</th>
+                  <th className="pb-2 pr-4 font-medium">Views</th>
+                  <th className="pb-2 pr-4 font-medium">Engaj.</th>
+                  <th className="pb-2 font-medium">Posts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.competitors.map((comp) => {
+                  const latest = data.competitorSnapshots
+                    .filter((s) => s.competitorId === comp.id)
+                    .sort((a, b) => b.date.localeCompare(a.date))[0];
+                  return (
+                    <tr key={comp.id} className="border-b border-violet/5">
+                      <td className="py-2.5 pr-4">
+                        <span className="font-medium text-ink">{comp.name}</span>
+                        <span className="ml-1.5 text-xs text-ink/40">{comp.handle}</span>
+                      </td>
+                      <td className="py-2.5 pr-4 text-ink/70">{latest ? latest.followers.toLocaleString("pt-BR") : "—"}</td>
+                      <td className="py-2.5 pr-4 text-ink/70">{latest ? (latest.views >= 1000 ? `${(latest.views / 1000).toFixed(1)}k` : latest.views) : "—"}</td>
+                      <td className="py-2.5 pr-4 text-ink/70">{latest ? `${latest.engagement}%` : "—"}</td>
+                      <td className="py-2.5 text-ink/70">{latest ? latest.posts : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
     </section>
