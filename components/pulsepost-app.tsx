@@ -13,6 +13,7 @@ import {
 } from "@/lib/repost-engine";
 import {
   AppUser,
+  CaptionDraft,
   Competitor,
   ContentType,
   FlashState,
@@ -1013,6 +1014,17 @@ export function PulsePostApp() {
     );
   }
 
+  function removeSchedule(id: string) {
+    persist(
+      {
+        ...data,
+        schedules: data.schedules.filter((s) => s.id !== id),
+        captions: data.captions.filter((c) => c.scheduleId !== id),
+      },
+      "Agendamento removido.",
+    );
+  }
+
   function refreshStats(id: string) {
     const nextState: PersistedState = {
       ...data,
@@ -1619,14 +1631,16 @@ export function PulsePostApp() {
                     </FormGrid>
                   </Card>
 
-                  <Card title="Fila programada" description="Timeline dos proximos disparos.">
+                  <Card title="Fila programada" description="Timeline dos proximos disparos com legendas por rede.">
                     <div className="grid gap-3">
                       {data.schedules.length === 0 && (
                         <p className="rounded-2xl border border-dashed border-violet/15 px-6 py-10 text-center text-sm text-ink/40">Nenhum agendamento criado ainda.</p>
                       )}
                       {[...data.schedules]
                         .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
-                        .map((schedule) => (
+                        .map((schedule) => {
+                          const scheduleCaptions = data.captions.filter((c) => c.scheduleId === schedule.id);
+                          return (
                           <article key={schedule.id} className="rounded-[1.25rem] border border-violet/10 bg-white p-4 transition hover:border-violet/20">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1">
@@ -1649,6 +1663,77 @@ export function PulsePostApp() {
                             </div>
                             <p className="mt-2 text-xs text-ink/50">Midia: {getLinkedMediaTitle(schedule.mediaId)}</p>
                             {schedule.caption && <p className="mt-1 line-clamp-2 text-xs text-ink/45">{schedule.caption}</p>}
+
+                            {/* Per-network captions */}
+                            <details className="mt-3 rounded-xl border border-violet/8">
+                              <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-violet hover:bg-violet/4">
+                                Legendas por rede ({scheduleCaptions.length}/{schedule.networks.length})
+                              </summary>
+                              <div className="grid gap-2 px-3 pb-3 pt-1">
+                                {schedule.networks.map((net) => {
+                                  const existing = scheduleCaptions.find((c) => c.network === net);
+                                  return (
+                                    <div key={net} className="grid gap-1">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[10px] font-medium text-ink/60">{networkLabels[net]}</span>
+                                        {existing && (
+                                          <span className={classNames(
+                                            "rounded-full px-1.5 py-0.5 text-[8px] font-bold",
+                                            existing.status === "approved" ? "bg-emerald-100 text-emerald-700"
+                                              : existing.status === "published" ? "bg-violet/10 text-violet"
+                                              : "bg-gray-100 text-gray-600",
+                                          )}>
+                                            {existing.status === "approved" ? "Aprovada" : existing.status === "published" ? "Publicada" : "Rascunho"}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex gap-1">
+                                        <input
+                                          type="text"
+                                          defaultValue={existing?.text ?? schedule.caption}
+                                          placeholder="Legenda para esta rede..."
+                                          className="flex-1 rounded-lg border border-violet/10 bg-violet/3 px-2 py-1.5 text-[11px] outline-none focus:border-violet"
+                                          onBlur={(e) => {
+                                            const text = e.target.value.trim();
+                                            if (!text) return;
+                                            if (existing) {
+                                              persist({
+                                                ...data,
+                                                captions: data.captions.map((c) => c.id === existing.id ? { ...c, text } : c),
+                                              });
+                                            } else {
+                                              const newCaption: CaptionDraft = {
+                                                id: randomId("caption"),
+                                                mediaId: schedule.mediaId,
+                                                scheduleId: schedule.id,
+                                                text,
+                                                network: net,
+                                                status: "draft",
+                                                createdAt: new Date().toISOString(),
+                                              };
+                                              persist({ ...data, captions: [...data.captions, newCaption] });
+                                            }
+                                          }}
+                                        />
+                                        {existing && existing.status === "draft" && (
+                                          <button
+                                            type="button"
+                                            onClick={() => persist({
+                                              ...data,
+                                              captions: data.captions.map((c) => c.id === existing.id ? { ...c, status: "approved" as const } : c),
+                                            })}
+                                            className="shrink-0 rounded-lg bg-emerald-100 px-2 py-1 text-[9px] font-bold text-emerald-700 hover:bg-emerald-200"
+                                          >
+                                            Aprovar
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </details>
+
                             <div className="mt-3 flex flex-wrap items-center gap-2">
                               {schedule.woopStatus ? (
                                 <span
@@ -1675,9 +1760,17 @@ export function PulsePostApp() {
                                   {publishingSchedule ? "Enviando..." : "Publicar"}
                                 </button>
                               ) : null}
+                              <button
+                                type="button"
+                                onClick={() => removeSchedule(schedule.id)}
+                                className="rounded-full bg-rose-50 px-3 py-1 text-[11px] font-medium text-rose-500 transition hover:bg-rose-100"
+                              >
+                                Remover
+                              </button>
                             </div>
                           </article>
-                        ))}
+                          );
+                        })}
                     </div>
                   </Card>
                 </section>
