@@ -87,7 +87,7 @@ export function PrompterStage({ scriptText, onClose }: { scriptText: string; onC
       />
       <div className="absolute inset-0 bg-black/45" />
 
-      <div className="absolute inset-x-0 top-0 bottom-44 overflow-y-auto px-6 py-[42vh]">
+      <div className="absolute inset-x-0 top-0 bottom-52 overflow-y-auto px-6 py-[42vh]">
         <p className="mx-auto max-w-3xl font-medium leading-[1.5] tracking-tight" style={{ fontSize }}>
           {speech.tokens.map((tok, i) => {
             const spoken = i < speech.currentIndex;
@@ -150,7 +150,7 @@ export function PrompterStage({ scriptText, onClose }: { scriptText: string; onC
             />
           </label>
         )}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-center gap-2">
           <CtrlButton label={running ? "⏸ Pausar" : "▶ Iniciar"} active={running} onClick={() => setRunning((r) => !r)} />
           <CtrlButton
             label={camera.recording ? "■ Parar" : "● Gravar"}
