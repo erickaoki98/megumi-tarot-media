@@ -6,14 +6,17 @@
 
 ## 1. Visão geral
 
-Nova aba **Teleprompter** no app. Ela mostra um roteiro em tela cheia que **rola automaticamente conforme a pessoa fala**, usando reconhecimento de fala do navegador em tempo real (pt-BR). No modo principal, a **câmera frontal** aparece como fundo e o texto flutua por cima (efeito "texto sobre o rosto"), permitindo **gravar um vídeo limpo** (só a imagem da câmera, sem o texto queimado) e baixá-lo.
+Nova aba **Teleprompter** no app, **100% pensada para celular (mobile-first)**. Ela mostra um roteiro em tela cheia que **rola automaticamente conforme a pessoa fala**, usando reconhecimento de fala do navegador em tempo real (pt-BR). No modo principal, a **câmera frontal** aparece como fundo e o texto flutua por cima (efeito "texto sobre o rosto"), permitindo **gravar um vídeo limpo** (só a imagem da câmera, sem o texto queimado) e baixá-lo.
 
 O texto vem dos **roteiros já cadastrados** na aba Roteiros (cada `Script` tem `title` e `body`) **ou** de um texto avulso colado/digitado na hora.
+
+**Acesso por desktop é bloqueado**: ao abrir a aba num computador, em vez do prompter aparece a mensagem exata `Página acessível apenas via mobile`.
 
 ## 2. Objetivos e não-objetivos
 
 ### Objetivos (Fase 1)
 - Aba `teleprompter` integrada à navegação existente (`ViewKey`).
+- **UX 100% mobile-first** (retrato, alvos de toque grandes, tela cheia). **Acesso por desktop é bloqueado** com a mensagem exata `Página acessível apenas via mobile`.
 - Selecionar fonte do texto: roteiro existente **ou** texto avulso.
 - Prompter em tela cheia com câmera frontal de fundo (espelhada) e texto por cima.
 - **Rastreamento por voz**: o texto rola e destaca a linha atual conforme a pessoa fala.
@@ -26,12 +29,13 @@ O texto vem dos **roteiros já cadastrados** na aba Roteiros (cada `Script` tem 
 
 ### Não-objetivos
 - Sobrepor o teleprompter ao **app de câmera nativo** do iPhone (**impossível** com tecnologia web no iOS — ver §8).
+- **Suporte a desktop** para a aba Teleprompter (é intencionalmente bloqueada no desktop).
 - Enviar o vídeo gravado para a Biblioteca/R2 (fica para depois; por ora só download).
 - Edição de vídeo, legendas automáticas no vídeo final, multi-idioma além de pt-BR.
 
 ## 3. Fluxo de uso (modo principal)
 
-1. Usuário abre a aba **Teleprompter**.
+1. Usuário abre a aba **Teleprompter** **num celular** (no desktop vê só a mensagem de bloqueio).
 2. Escolhe a fonte do texto:
    - **Roteiro**: lista os `scripts` do estado do app; seleciona um (usa o `body`).
    - **Avulso**: cola/digita o texto num campo.
@@ -47,15 +51,26 @@ O texto vem dos **roteiros já cadastrados** na aba Roteiros (cada `Script` tem 
 Decisão: o recurso é um **módulo isolado**, não inline no arquivo gigante `components/pulsepost-app.tsx` (3.610 linhas). Isso mantém o recurso testável e separado, e evita piorar o arquivo grande.
 
 ### Arquivos a criar
-- `components/teleprompter/teleprompter-view.tsx` — a tela da aba: seletor de fonte do texto + entrada no modo tela cheia.
-- `components/teleprompter/prompter-stage.tsx` — a camada de tela cheia: `<video>` da câmera ao fundo + texto rolável por cima + barra de controles.
+- `components/teleprompter/teleprompter-view.tsx` — a tela da aba: aplica o gate mobile-only, e (no celular) o seletor de fonte do texto + entrada no modo tela cheia.
+- `components/teleprompter/prompter-stage.tsx` — a camada de tela cheia: `<video>` da câmera ao fundo + texto rolável por cima + barra de controles (mobile-first).
 - `components/teleprompter/use-speech-scroll.ts` — hook do rastreamento por voz (encapsula a Web Speech API + a lógica de avanço do ponteiro). Expõe posição/linha atual e controles (iniciar/parar/re-sincronizar).
 - `components/teleprompter/use-camera-recorder.ts` — hook da câmera + gravação (`getUserMedia`, `MediaRecorder`, estado de permissão, blob gravado).
+- `components/teleprompter/use-is-mobile.ts` — detecção de dispositivo móvel para o gate (ponteiro grosso + largura de viewport pequena, com user-agent como sinal secundário; reavalia no `resize`).
 - `components/teleprompter/match-position.ts` — **função pura** que casa as palavras reconhecidas com o roteiro e retorna a nova posição do ponteiro. Sem dependência de browser → unit-testável.
 
 ### Arquivos a tocar (mínimo)
 - `types/app.ts` — adicionar `"teleprompter"` ao union `ViewKey`.
 - `components/pulsepost-app.tsx` — 1 item no menu (`nav`), 1 caso no `NavIcon`, 1 entrada em `viewMeta`/`pageTitleMap`, e renderizar `<TeleprompterView/>` quando `activeView === "teleprompter"`. **Nenhuma** lógica pesada entra aqui.
+
+## 4.1 Gate mobile-only (bloqueio no desktop)
+
+Toda a UX é desenhada para **celular em modo retrato** (alvos de toque grandes, tela cheia). Ao abrir a aba Teleprompter num **desktop** (ponteiro fino + viewport larga), em vez do prompter renderiza-se uma tela simples e centralizada com a mensagem **exata**:
+
+> Página acessível apenas via mobile
+
+- Detecção em `use-is-mobile.ts`: considera "mobile" quando `(pointer: coarse)` **e** a largura da viewport é pequena (limiar ~820px), com user-agent (iPhone/Android) como sinal secundário. Reavalia em `resize`.
+- O **modo de emulação de dispositivo** do navegador (DevTools) satisfaz esses critérios, então a UI ainda pode ser testada no desktop via emulação durante o desenvolvimento.
+- O gate é aplicado no `TeleprompterView`; o resto do app (admin) continua acessível normalmente no desktop.
 
 ## 5. Rastreamento por voz (algoritmo)
 
@@ -74,7 +89,7 @@ Decisão: o recurso é um **módulo isolado**, não inline no arquivo gigante `c
 
 - O texto fica numa **camada HTML por cima** do `<video>`; essa camada **nunca** entra no `MediaStream` da câmera.
 - Gravo diretamente o fluxo de `getUserMedia` (faixas de vídeo **e** áudio) com `MediaRecorder` → o arquivo sai **só com a imagem da câmera + áudio**, sem o teleprompter.
-- Ao parar, gero um `Blob` e ofereço **download** (link com o arquivo). Formato conforme suporte do navegador (ex.: `video/mp4` quando possível; `webm` no desktop).
+- Ao parar, gero um `Blob` e ofereço **download** (link com o arquivo). Formato conforme suporte do navegador (ex.: `video/mp4` quando possível; `webm` no desktop/emulação).
 - Integração futura (fora do escopo): enviar o `Blob` para a Biblioteca/R2 via `app/api/media/upload/route.ts`.
 
 ## 7. Permissões e tratamento de falhas
@@ -103,10 +118,12 @@ Esses riscos serão verificados com um teste mínimo no início da implementaç�
 ## 10. Testes
 
 - `match-position.ts`: unit tests com transcrições de exemplo — fala exata, palavra pulada, erro de transcrição, improviso/ad-lib. Verifica que o ponteiro avança corretamente e não volta atrás indevidamente.
-- Câmera, gravação, voz e PiP: teste manual no desktop (Chrome) e **no iPhone do usuário** (onde moram os riscos do §8).
+- `use-is-mobile.ts`: teste da lógica de decisão (mobile vs desktop) com diferentes combinações de ponteiro/viewport/user-agent.
+- Câmera, gravação, voz e PiP: teste manual via **emulação de dispositivo móvel** no Chrome (DevTools) e, principalmente, **no iPhone do usuário** (onde moram os riscos do §8). Em desktop real (sem emulação), a aba mostra apenas a mensagem de bloqueio mobile-only.
 
 ## 11. Decisões padrão (assumidas)
 
+- **Mobile-only**: UX desenhada para celular (retrato); desktop recebe a mensagem `Página acessível apenas via mobile`.
 - Câmera **frontal** com **espelho ligado** por padrão (botão para desligar).
 - Reconhecimento em **pt-BR**.
 - Gravação **vídeo + áudio**, baixável.
@@ -114,5 +131,5 @@ Esses riscos serão verificados com um teste mínimo no início da implementaç�
 
 ## 12. Fases de entrega
 
-- **Fase 1 (núcleo):** aba + seletor de fonte (roteiros + avulso) + prompter tela cheia com câmera de fundo + rastreamento por voz + fallback manual + gravação limpa com download. Inicia com um **teste mínimo dos riscos do §8** no iPhone.
+- **Fase 1 (núcleo):** aba + gate mobile-only + seletor de fonte (roteiros + avulso) + prompter tela cheia com câmera de fundo + rastreamento por voz + fallback manual + gravação limpa com download. Inicia com um **teste mínimo dos riscos do §8** no iPhone.
 - **Fase 2 (secundário):** modo flutuante PiP (velocidade fixa).
