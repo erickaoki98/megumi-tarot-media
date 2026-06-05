@@ -187,4 +187,5 @@ export type ViewKey =
   | "competitors"
   | "reposts"
   | "users"
-  | "config";
+  | "config"
+  | "teleprompter";

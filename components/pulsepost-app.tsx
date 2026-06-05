@@ -29,6 +29,7 @@ import {
   ViewKey,
 } from "@/types/app";
 import { MediaPicker, MediaPickerTrigger } from "@/components/media-picker";
+import { TeleprompterView } from "@/components/teleprompter/teleprompter-view";
 
 type FiltersState = {
   mediaStatus: "all" | MediaStatus;
@@ -1173,6 +1174,7 @@ export function PulsePostApp() {
                   { key: "calendar", label: "Calendario" },
                   { key: "scheduler", label: "Agendamentos" },
                   { key: "scripts", label: "Roteiros" },
+                  { key: "teleprompter", label: "Teleprompter" },
                   { key: "plan", label: "Plano do dia" },
                   { key: "insights", label: "Engajamento" },
                   { key: "competitors", label: "Concorrentes" },
@@ -1221,6 +1223,11 @@ export function PulsePostApp() {
               {/* ── Scripts ── */}
               {activeView === "scripts" ? (
                 <ScriptsView data={data} persist={persist} />
+              ) : null}
+
+              {/* ── Teleprompter ── */}
+              {activeView === "teleprompter" ? (
+                <TeleprompterView data={data} />
               ) : null}
 
               {/* ── Competitors ── */}
@@ -2425,6 +2432,12 @@ const viewMeta: Record<
     actionLabel: "Adicionar concorrente",
     onAction: () => undefined,
   },
+  teleprompter: {
+    title: "Teleprompter",
+    description: "Leia seus roteiros em tela cheia com a câmera, rolagem por voz e gravação. Use no celular.",
+    actionLabel: "Ver roteiros",
+    onAction: (setActiveView) => () => setActiveView("scripts"),
+  },
 };
 
 const pageTitleMap: Record<ViewKey, string> = {
@@ -2439,6 +2452,7 @@ const pageTitleMap: Record<ViewKey, string> = {
   reposts: "Repostagem",
   users: "Usuarios",
   config: "Config",
+  teleprompter: "Teleprompter",
 };
 
 function ViewHeader({
@@ -2551,6 +2565,8 @@ function NavIcon({ view }: { view: ViewKey }) {
       return <UsersIcon className="size-4" />;
     case "config":
       return <ConnectionIcon className="size-4" />;
+    case "teleprompter":
+      return <ScriptIcon className="size-4" />;
     default:
       return <HeartPlayIcon className="size-4" />;
   }
