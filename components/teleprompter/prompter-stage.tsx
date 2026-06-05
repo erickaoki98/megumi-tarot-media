@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { classNames } from "@/lib/utils";
 import { useSpeechScroll } from "./use-speech-scroll";
 import { useCameraRecorder } from "./use-camera-recorder";
+import { saveRecording } from "./save-recording";
 
 const FONT_SIZES = [22, 28, 34, 42, 52];
 
@@ -29,7 +30,15 @@ function CtrlButton({ label, active, onClick }: { label: string; active?: boolea
   );
 }
 
-export function PrompterStage({ scriptText, onClose }: { scriptText: string; onClose: () => void }) {
+export function PrompterStage({
+  scriptText,
+  onClose,
+  onRecorded,
+}: {
+  scriptText: string;
+  onClose: () => void;
+  onRecorded?: (blob: Blob) => void;
+}) {
   const speech = useSpeechScroll(scriptText);
   const camera = useCameraRecorder("user");
 
@@ -70,6 +79,12 @@ export function PrompterStage({ scriptText, onClose }: { scriptText: string; onC
   useEffect(() => {
     currentRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [speech.currentIndex]);
+
+  // Preserve the finished recording in the parent so closing the stage never loses it.
+  useEffect(() => {
+    if (camera.recordedBlob) onRecorded?.(camera.recordedBlob);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera.recordedBlob]);
 
   const fontSize = FONT_SIZES[fontIdx];
 
@@ -128,14 +143,33 @@ export function PrompterStage({ scriptText, onClose }: { scriptText: string; onC
 
       <div className="absolute inset-x-0 bottom-0 space-y-3 bg-gradient-to-t from-black/80 to-transparent p-4 pb-6">
         {camera.error && <p className="text-center text-sm text-amber-300">{camera.error}</p>}
-        {camera.recordedUrl && !camera.recording && (
-          <a
-            href={camera.recordedUrl}
-            download="teleprompter.webm"
-            className="block rounded-2xl bg-emerald-500 px-4 py-3 text-center text-sm font-semibold text-black"
-          >
-            ⬇ Baixar vídeo gravado
-          </a>
+        {camera.recordedUrl && camera.recordedBlob && !camera.recording && (
+          <div className="space-y-2">
+            <video
+              src={camera.recordedUrl}
+              controls
+              playsInline
+              className="mx-auto max-h-44 w-full max-w-sm rounded-2xl bg-black/60"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (camera.recordedBlob) saveRecording(camera.recordedBlob);
+                }}
+                className="flex-1 rounded-2xl bg-emerald-500 px-4 py-3 text-center text-sm font-semibold text-black"
+              >
+                ⬇ Salvar vídeo
+              </button>
+              <button
+                type="button"
+                onClick={() => camera.clearRecording()}
+                className="rounded-2xl bg-white/15 px-4 py-3 text-sm font-medium text-white backdrop-blur"
+              >
+                Regravar
+              </button>
+            </div>
+          </div>
         )}
         {(manual || speech.support === "unsupported") && (
           <label className="flex items-center gap-3 text-xs text-white/80">

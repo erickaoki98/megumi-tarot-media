@@ -1,15 +1,29 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { classNames } from "@/lib/utils";
 import type { PersistedState } from "@/types/app";
 import { useIsMobile } from "./use-is-mobile";
 import { PrompterStage } from "./prompter-stage";
+import { saveRecording } from "./save-recording";
 
 export function TeleprompterView({ data }: { data: PersistedState }) {
   const isMobile = useIsMobile();
   const [text, setText] = useState("");
   const [active, setActive] = useState(false);
+  const [lastRecording, setLastRecording] = useState<Blob | null>(null);
+  const [lastRecordingUrl, setLastRecordingUrl] = useState<string | null>(null);
+
+  // Keep a preview URL for the last recording; revoke it when it changes/unmounts.
+  useEffect(() => {
+    if (!lastRecording) {
+      setLastRecordingUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(lastRecording);
+    setLastRecordingUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [lastRecording]);
 
   if (isMobile === null) {
     return <p className="text-sm text-ink/50">Carregando…</p>;
@@ -24,7 +38,13 @@ export function TeleprompterView({ data }: { data: PersistedState }) {
   }
 
   if (active && text.trim()) {
-    return <PrompterStage scriptText={text} onClose={() => setActive(false)} />;
+    return (
+      <PrompterStage
+        scriptText={text}
+        onClose={() => setActive(false)}
+        onRecorded={(blob) => setLastRecording(blob)}
+      />
+    );
   }
 
   return (
@@ -72,6 +92,31 @@ export function TeleprompterView({ data }: { data: PersistedState }) {
       >
         ▶ Iniciar teleprompter
       </button>
+
+      {lastRecording && lastRecordingUrl && (
+        <div className="grid gap-3 rounded-[1.4rem] border border-emerald-500/30 bg-emerald-500/5 p-4">
+          <p className="text-sm font-medium text-ink/75">Última gravação</p>
+          <video src={lastRecordingUrl} controls playsInline className="w-full rounded-2xl bg-black" />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (lastRecording) saveRecording(lastRecording);
+              }}
+              className="flex-1 rounded-full bg-emerald-500 px-4 py-3 text-center text-sm font-semibold text-black"
+            >
+              ⬇ Salvar vídeo
+            </button>
+            <button
+              type="button"
+              onClick={() => setLastRecording(null)}
+              className="rounded-full border border-violet/15 px-4 py-3 text-sm font-medium text-ink/70"
+            >
+              Descartar
+            </button>
+          </div>
+        </div>
+      )}
 
       <p className="text-xs leading-5 text-ink/45">
         Dica: o texto rola conforme você fala. Toque numa palavra para re-sincronizar. O vídeo gravado sai limpo (sem o

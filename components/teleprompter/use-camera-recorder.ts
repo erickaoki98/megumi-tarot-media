@@ -10,11 +10,13 @@ export type UseCameraRecorder = {
   recording: boolean;
   elapsedMs: number;
   recordedUrl: string | null;
+  recordedBlob: Blob | null;
   error: string | null;
   start: () => Promise<void>;
   stop: () => void;
   startRecording: () => void;
   stopRecording: () => void;
+  clearRecording: () => void;
 };
 
 export function useCameraRecorder(facingMode: "user" | "environment" = "user"): UseCameraRecorder {
@@ -24,11 +26,13 @@ export function useCameraRecorder(facingMode: "user" | "environment" = "user"): 
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const startedAtRef = useRef<number>(0);
+  const urlRef = useRef<string | null>(null);
 
   const [permission, setPermission] = useState<CameraPermission>("idle");
   const [recording, setRecording] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const start = useCallback(async () => {
@@ -69,21 +73,41 @@ export function useCameraRecorder(facingMode: "user" | "environment" = "user"): 
     }
     chunksRef.current = [];
     const mime =
-      ["video/mp4", "video/webm;codecs=vp9,opus", "video/webm"].find(
-        (t) => MediaRecorder.isTypeSupported(t),
-      ) || "";
-    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      ["video/mp4", "video/webm;codecs=vp9,opus", "video/webm"].find((t) => {
+        try {
+          return MediaRecorder.isTypeSupported(t);
+        } catch {
+          return false;
+        }
+      }) || "";
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    } catch {
+      setError("Não foi possível iniciar a gravação neste navegador.");
+      return;
+    }
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data);
+      if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+    };
+    recorder.onerror = () => {
+      setError("Ocorreu um erro durante a gravação.");
     };
     recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "video/webm" });
-      setRecordedUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return URL.createObjectURL(blob);
-      });
+      const type = recorder.mimeType || mime || "video/mp4";
+      const blob = new Blob(chunksRef.current, { type });
+      if (blob.size === 0) {
+        setError("A gravação saiu vazia. Tente gravar de novo.");
+        return;
+      }
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      const url = URL.createObjectURL(blob);
+      urlRef.current = url;
+      setRecordedBlob(blob);
+      setRecordedUrl(url);
     };
-    recorder.start();
+    // Timeslice so iOS Safari reliably emits data chunks during recording.
+    recorder.start(1000);
     recorderRef.current = recorder;
     startedAtRef.current = Date.now();
     setRecording(true);
@@ -100,6 +124,15 @@ export function useCameraRecorder(facingMode: "user" | "environment" = "user"): 
     }
   }, []);
 
+  const clearRecording = useCallback(() => {
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+    }
+    setRecordedBlob(null);
+    setRecordedUrl(null);
+  }, []);
+
   useEffect(() => {
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
@@ -107,5 +140,18 @@ export function useCameraRecorder(facingMode: "user" | "environment" = "user"): 
     };
   }, []);
 
-  return { videoRef, permission, recording, elapsedMs, recordedUrl, error, start, stop, startRecording, stopRecording };
+  return {
+    videoRef,
+    permission,
+    recording,
+    elapsedMs,
+    recordedUrl,
+    recordedBlob,
+    error,
+    start,
+    stop,
+    startRecording,
+    stopRecording,
+    clearRecording,
+  };
 }
